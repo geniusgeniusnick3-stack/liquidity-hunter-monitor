@@ -172,8 +172,8 @@ async function handle(parsed: Command): Promise<void> {
       await reply(ui().helpText);
       break;
     case "events":
-      // Dry run: show what is live right now without sending anything.
-      await runScanner([], true);
+      // Show what is live right now without sending anything.
+      await runScanner({ send: false, echoToChat: true });
       break;
     case "status":
       await reply(await buildStatus());
@@ -185,14 +185,16 @@ async function handle(parsed: Command): Promise<void> {
       await reply(await handleLanguage(parsed.value));
       break;
     case "scan": {
-      const args = ["--send"];
-      if (parsed.req?.symbol) args.push("--symbols", parsed.req.symbol);
-      if (parsed.req?.timeframe) args.push("--timeframe", parsed.req.timeframe);
       const scope = parsed.req?.symbol
         ? `${parsed.req.symbol}${parsed.req.timeframe ? " " + parsed.req.timeframe.toUpperCase() : ""}`
-        : "全部追蹤幣種";
+        : ui().replyScopeAll;
       await reply(ui().scanning(scope));
-      await runScanner(args, true);
+      await runScanner({
+        symbols: parsed.req?.symbol ? [parsed.req.symbol] : undefined,
+        timeframe: parsed.req?.timeframe,
+        send: true,
+        echoToChat: true,
+      });
       break;
     }
     default:
@@ -303,41 +305,60 @@ async function buildStatus(): Promise<string> {
   ].join("\n");
 }
 
-async function runScanner(extraArgs: string[], echoToChat = false): Promise<string> {
-  const { spawn } = await import("node:child_process");
-  return new Promise<string>((done) => {
-    const child = spawn(
-      "npx",
-      ["tsx", resolve(ROOT, "artifacts/api-server/src/scripts/live-snapshot.ts"), ...extraArgs],
-      { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, NODE_ENV: "production" } },
-    );
+/**
+ * Run a scan and answer in chat.
+ *
+ * Calls the shared engine in-process rather than spawning the CLI and scraping
+ * its stdout. An earlier version did the latter and forwarded the CLI's operator
+ * summary verbatim, which meant users received internal chatter — dedup-state
+ * counters, a Node.js experimental-feature warning, a line reading "Sent 0" —
+ * wrapped around the one sentence they actually needed.
+ *
+ * The reply is now built by formatScanReply from the structured result, so the
+ * chat answer and the operator log are separate concerns.
+ */
+async function runScanner(
+  opts: { symbols?: string[]; timeframe?: string; send: boolean; echoToChat?: boolean },
+): Promise<string> {
+  const { runScan } = await import("../lib/scan/ScanEngine.js");
+  const { formatScanReply } = await import("../lib/notify/formatters.js");
+  const { telegramNotifier } = await import("../lib/notify/TelegramNotifier.js");
 
-    let out = "";
-    child.stdout.on("data", (d) => { out += String(d); });
-    child.stderr.on("data", (d) => { out += String(d); });
+  const t = ui();
 
-    child.on("close", async (code) => {
-      if (code !== 0) out += `\n（掃描程序退出碼 ${code}）`;
-      // Trim the log noise the scanner emits for operators, not traders.
-      const cleaned = out
-        .split("\n")
-        .filter((l) => !/^\{"level":\d+/.test(l.trim()))
-        .filter((l) => !l.includes("npm warn"))
-        .join("\n")
-        .trim();
-
-      if (echoToChat) {
-        // Telegram caps messages at 4096 chars.
-        const body = cleaned.length > 3500 ? cleaned.slice(0, 3500) + "\n…（已截斷）" : cleaned;
-        await reply(`<pre>${escapeHtml(body)}</pre>`);
-      }
-      done(cleaned);
-    });
+  const result = await runScan({
+    symbols: opts.symbols,
+    timeframes: opts.timeframe ? [opts.timeframe] : undefined,
+    // Operator detail goes to the service log, never to the chat.
+    onLog: (m) => console.log(`[scan] ${m}`),
   });
-}
 
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  if (opts.send) {
+    for (const alert of result.pending) {
+      await telegramNotifier.send(alert.text);
+    }
+  }
+
+  const scope = opts.symbols?.length
+    ? `${opts.symbols.join(", ")}${opts.timeframe ? " " + opts.timeframe.toUpperCase() : ""}`
+    : t.replyScopeAll;
+
+  const text = formatScanReply({
+    scope,
+    events: result.events,
+    approaches: result.approaches,
+    historySkipped: result.historySkipped,
+    symbolCount: result.symbolCount,
+    latestCandleTime: result.latestCandleTime,
+    scanned: result.scanned,
+    failures: result.failures,
+  }, result.language);
+
+  if (opts.echoToChat) {
+    // Plain text, not a code block: this is a sentence for a person, not output.
+    await reply(text);
+  }
+  return text;
 }
 
 main().catch((err) => {

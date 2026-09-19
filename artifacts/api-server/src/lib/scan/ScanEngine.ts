@@ -152,7 +152,6 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
   const savedDedup = store.getState<ReturnType<AlertDeduplicator["exportState"]>>("dedup_state");
   if (savedDedup && !options.bypassDedup) {
     dedup.importState(savedDedup);
-    log(`已載入去重狀態：${dedup.getStats().trackedEvents} 筆事件、${dedup.getStats().trackedLevels} 個價位`);
   }
 
   // ── Which symbols? ──
@@ -160,13 +159,23 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
   let eligibleCount = 0;
   if (options.symbols?.length) {
     symbols = options.symbols;
-    log(`使用指定幣種：${symbols.join(", ")}`);
   } else {
     const { universeManager } = await import("../universe/DynamicUniverseManager.js");
     const snap = await universeManager.refresh();
     symbols = snap.activeSymbols;
     eligibleCount = snap.eligibleCount;
-    log(`監控清單：${symbols.length} 個幣（${snap.eligibleCount} 個通過流動性門檻）`);
+  }
+
+  // Internal progress notes. These go to the operator's log, not to the user —
+  // the user-facing reply is built separately (see formatScanReply) so debug
+  // detail never leaks into a chat message.
+  if (savedDedup && !options.bypassDedup) {
+    log(`dedup state: ${dedup.getStats().trackedEvents} events / ${dedup.getStats().trackedLevels} levels loaded`);
+  }
+  if (options.symbols?.length) {
+    log(`symbols: ${symbols.join(", ")}`);
+  } else {
+    log(`universe: ${symbols.length} symbols (${eligibleCount} eligible)`);
   }
 
   const regionTolerancePct = config.liquidity.region_tolerance_pct;

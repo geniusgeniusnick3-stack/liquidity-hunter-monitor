@@ -226,6 +226,18 @@ export interface UiStrings {
   analysisTimeframes: string;
   alertLanguage: string;
   modeSwitchHow: string;
+
+  // ── User-facing scan reply ──
+  // Deliberately separate from the operator-facing summary: a user asking
+  // "is anything happening?" needs an answer, not a run log.
+  replyTitle: string;
+  replyScopeAll: string;
+  replyNoEvents: string;
+  replyEventsHeading: string;
+  replyHistoryHeading: string;
+  replyApproachingHeading: string;
+  replyFooter: (symbols: number, candle: string) => string;
+  replyFailed: (failed: number, pairs: number) => string;
 }
 
 const UI_ZH_TW: UiStrings = {
@@ -284,6 +296,15 @@ ACTIVE 必須由使用者明確開啟，不會自動啟動。`,
   analysisTimeframes: "分析時框",
   alertLanguage: "通知語言",
   modeSwitchHow: "要切換模式：修改 config.yaml 的 monitoring.mode，或設定環境變數\nMONITORING_MODE=active / passive，然後重啟服務。",
+
+  replyTitle: "掃描完成",
+  replyScopeAll: "全部追蹤幣種",
+  replyNoEvents: "沒有新事件。",
+  replyEventsHeading: "剛發生的事件：",
+  replyHistoryHeading: "這個價位近期已處理過，不重複報：",
+  replyApproachingHeading: "接近中：",
+  replyFooter: (s, c) => `追蹤 ${s} 個幣｜最新 K 線 ${c}`,
+  replyFailed: (f, p) => `（其中 ${f}／${p} 組讀取失敗）`,
 };
 
 const UI_ZH_CN: UiStrings = {
@@ -342,6 +363,15 @@ ACTIVE 必须由使用者明确开启，不会自动启动。`,
   analysisTimeframes: "分析时间框",
   alertLanguage: "通知语言",
   modeSwitchHow: "要切换模式：修改 config.yaml 的 monitoring.mode，或设定环境变数\nMONITORING_MODE=active / passive，然后重启服务。",
+
+  replyTitle: "扫描完成",
+  replyScopeAll: "全部追踪币种",
+  replyNoEvents: "没有新事件。",
+  replyEventsHeading: "刚发生的事件：",
+  replyHistoryHeading: "这个价位近期已处理过，不重复报：",
+  replyApproachingHeading: "接近中：",
+  replyFooter: (s, c) => `追踪 ${s} 个币｜最新 K 线 ${c}`,
+  replyFailed: (f, p) => `（其中 ${f}／${p} 组读取失败）`,
 };
 
 const UI_EN: UiStrings = {
@@ -400,6 +430,15 @@ ACTIVE must be enabled explicitly. It never starts on its own.`,
   analysisTimeframes: "Timeframes",
   alertLanguage: "Alert language",
   modeSwitchHow: "To switch: set monitoring.mode in config.yaml, or set the environment\nvariable MONITORING_MODE=active / passive, then restart the service.",
+
+  replyTitle: "Scan complete",
+  replyScopeAll: "all tracked symbols",
+  replyNoEvents: "No new events.",
+  replyEventsHeading: "Just triggered:",
+  replyHistoryHeading: "Already handled in this area recently (not repeated):",
+  replyApproachingHeading: "Approaching:",
+  replyFooter: (s, c) => `Tracking ${s} symbols | Latest candle ${c}`,
+  replyFailed: (f, p) => `(${f} of ${p} pairs failed to load)`,
 };
 
 export const UI: Record<Language, UiStrings> = {

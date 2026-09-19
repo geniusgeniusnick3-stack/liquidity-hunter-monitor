@@ -17,6 +17,7 @@
  */
 import {
   stringsFor,
+  uiFor,
   type Language,
   DEFAULT_LANGUAGE,
 } from "./i18n.js";
@@ -239,6 +240,89 @@ export function formatSweepGroup(
   ];
 
   return rows.join("\n");
+}
+
+// ── User-facing scan reply ─────────────────────────────────────────────────
+
+export interface ScanReplyInput {
+  /** What was scanned, already humanised (e.g. "TRXUSDT 4H" or "all tracked symbols"). */
+  scope: string;
+  events: Array<{ symbol: string; timeframe: string; side: LiquiditySide; state: "SWEPT" | "BROKEN"; levels: number[] }>;
+  approaches: Array<{ symbol: string; timeframes: string[]; side: LiquiditySide; price: number; distancePct: number }>;
+  historySkipped: Array<{ symbol: string; timeframe: string; side: LiquiditySide; price: number }>;
+  symbolCount: number;
+  latestCandleTime: number;
+  scanned: number;
+  failures: number;
+}
+
+/**
+ * The answer to "is anything happening?" — not a run log.
+ *
+ * Deliberately separate from the operator summary printed by the CLI. An earlier
+ * version reused that summary for the chat reply and leaked internal detail into
+ * the conversation: dedup-state counters, a Node.js experimental-feature warning,
+ * and lines like "Sent 0". None of it means anything to the person asking, and
+ * it buries the actual answer.
+ *
+ * Kept short on purpose: the alert bodies carry the detail when there is any.
+ */
+export function formatScanReply(input: ScanReplyInput, lang: Language = DEFAULT_LANGUAGE): string {
+  const s = stringsFor(lang);
+  const t = uiFor(lang);
+  const sep = lang === "en" ? " | " : "｜";
+
+  const time = input.latestCandleTime
+    ? new Date(input.latestCandleTime * 1000).toLocaleString("zh-TW", {
+        timeZone: "Asia/Taipei", hour12: false,
+        month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+      })
+    : "—";
+
+  // Brackets and separators follow the language: full-width for Chinese, ASCII
+  // for English. Mixing them is a small thing that reads as sloppy.
+  const open = lang === "en" ? "(" : "（";
+  const close = lang === "en" ? ")" : "）";
+  const listSep = lang === "en" ? ", " : "、";
+
+  const blocks: string[] = [`${t.replyTitle}${sep}${input.scope}`];
+
+  if (input.events.length > 0) {
+    const rows = [t.replyEventsHeading];
+    for (const e of input.events) {
+      const levels = [...new Set(e.levels)].sort((a, b) => a - b).map((l) => p(l)).join(listSep);
+      const state = e.state === "BROKEN" ? s.stateBroken : s.stateSwept;
+      rows.push(`  • ${e.symbol} ${e.timeframe.toUpperCase()} ${e.side} ${state} ${levels}`);
+    }
+    blocks.push(rows.join("\n"));
+  } else {
+    blocks.push(t.replyNoEvents);
+  }
+
+  if (input.approaches.length > 0) {
+    const rows = [t.replyApproachingHeading];
+    for (const a of input.approaches.slice(0, 10)) {
+      const tf = a.timeframes.map((x) => x.toUpperCase()).join("+");
+      rows.push(`  • ${a.symbol} ${tf} ${a.side} ${p(a.price)}${open}${a.distancePct.toFixed(2)}%${close}`);
+    }
+    if (input.approaches.length > 10) {
+      rows.push(`  ${t.more(input.approaches.length - 10)}`);
+    }
+    blocks.push(rows.join("\n"));
+  }
+
+  const footer = [t.replyFooter(input.symbolCount, time)];
+  if (input.failures > 0) {
+    footer.push(t.replyFailed(input.failures, input.scanned));
+  }
+  blocks.push(footer.join("\n"));
+
+  return blocks.join("\n\n");
+  if (input.failures > 0) {
+    lines.push(t.replyFailed(input.failures, input.scanned));
+  }
+
+  return lines.join("\n");
 }
 
 // ── Structure events (OB / FVG / BOS / CHoCH — optional alert types) ────────
