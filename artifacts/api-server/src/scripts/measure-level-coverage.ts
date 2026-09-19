@@ -1,68 +1,27 @@
 /**
- * Coverage measurement: are persisted unresolved levels still reaching a scan?
+ * Coverage measurement: does a scan see every unresolved level on record?
  *
  * Run: NODE_ENV=production npx tsx artifacts/api-server/src/scripts/measure-level-coverage.ts
  *
- * READ-ONLY. Calls the real engine and the real ledger but writes nothing — no
- * upsert, no setState. It answers one question with numbers instead of
- * reasoning: of the unresolved levels this system has on record, how many does
- * a live scan actually see?
+ * READ-ONLY. Writes nothing — no upsert, no setState.
  *
- * Why it matters: the ledger is the only memory of a level that has scrolled
- * out of the candle window. If a scan only ever reports what the engine returns
- * afresh, then a persisted level can be invisible to every future scan — which
- * is exactly the failure the P0 correction set out to remove, just arriving
- * through a different door.
+ * Why this exists: a level is only visible to a scan while its candle sits
+ * inside the loaded window AND its index has not drifted past the point where
+ * the engine starts looking for pivots. The ledger is the second chance for
+ * anything that slips through both. This script says, in numbers, how often
+ * each path is doing the work — and, more importantly, whether anything is
+ * falling through both.
+ *
+ * It uses the production restore path rather than a copy of the logic. An audit
+ * tool that reimplements what it is auditing can only confirm its own
+ * assumptions.
  */
 import { fetchKlines } from "../lib/market/futures.js";
-import { analyzeLiquidity, classifyLiquidityInteraction } from "../lib/smc/liquidity.js";
-import { SMC_CONFIG } from "../lib/smc/config.js";
-import { calcATR } from "../lib/smc/atr.js";
+import { analyzeLiquidity } from "../lib/smc/liquidity.js";
 import { getLiquidityStore } from "../lib/persistence/LiquidityStore.js";
 import { liquidityLevelId } from "../lib/events/Deduplicator.js";
-import type { Candle } from "../lib/smc/types.js";
+import { restorePersistedLevels } from "../lib/scan/RestoredLevels.js";
 import type { LiquiditySide } from "../lib/notify/formatters.js";
-
-type MissingKind = "superseded" | "consumed" | "truncated" | "out-of-window";
-
-/**
- * Why is a persisted level absent from the engine's output?
- *
- *   superseded    a more extreme pivot formed nearby, so this is no longer a
- *                 local extreme. Existing structural invalidation — correct.
- *   consumed      price traded through it after it formed, but the event never
- *                 reached the ledger. A real missed event.
- *   truncated     still valid, still untouched, simply outscored by the top-20
- *                 cut. A capacity limit, not a structural verdict.
- *   out-of-window formed before the candles we hold.
- */
-function classifyMissing(
-  level: { side: LiquiditySide; price: number; formedAt: number },
-  candles: Candle[],
-  timeframe: string,
-): MissingKind {
-  const idx = candles.findIndex((c) => c.time === level.formedAt);
-  if (idx < 0) return "out-of-window";
-
-  const isBuySide = level.side === "BSL";
-  const pivot = isBuySide ? candles[idx].high : candles[idx].low;
-  const windowSize = Math.min(20, Math.floor(candles.length / 4));
-
-  for (let j = Math.max(0, idx - windowSize); j <= Math.min(idx + windowSize, candles.length - 1); j++) {
-    if (j === idx) continue;
-    const p = isBuySide ? candles[j].high : candles[j].low;
-    if (isBuySide ? p >= pivot : p <= pivot) return "superseded";
-  }
-
-  const atr = calcATR(candles, SMC_CONFIG.atrPeriodPerTf[timeframe] ?? SMC_CONFIG.atrPeriod);
-  for (let k = idx + 1; k < candles.length; k++) {
-    const tol = Math.max((atr[k] ?? 0) * SMC_CONFIG.liquidityToleranceAtrMultiple, 0);
-    const state = classifyLiquidityInteraction(pivot, isBuySide, candles[k], tol);
-    if (state === "SWEPT" || state === "BROKEN") return "consumed";
-  }
-
-  return "truncated";
-}
 
 const SYMBOLS = (process.argv[2] ?? "BTCUSDT,ETHUSDT,SOLUSDT,TRXUSDT,XRPUSDT,SUIUSDT,XLMUSDT,DOGEUSDT")
   .split(",")
@@ -78,19 +37,18 @@ async function main(): Promise<void> {
 
   let totalPersisted = 0;
   let totalEngine = 0;
-  let totalMissing = 0;
-  const missingOld: Array<{ symbol: string; tf: string; price: number; ageDays: number; state: string }> = [];
-  const kindCounts: Record<MissingKind, number> = {
-    superseded: 0, consumed: 0, truncated: 0, "out-of-window": 0,
-  };
-  const noteworthy: Array<{
-    symbol: string; tf: string; price: number; kind: MissingKind; ageDays: number; state: string;
+  let totalRecovered = 0;
+  let totalUnseen = 0;
+
+  const reasons: Record<string, number> = {};
+  const unseenDetail: Array<{
+    symbol: string; tf: string; price: number; reason: string; ageDays: number; state: string;
   }> = [];
 
   console.log(
-    "symbol        tf  窗內根數  窗涵蓋天數  引擎回傳  帳本未解決  引擎看不到  其中>7天",
+    "symbol        tf  窗深天數  引擎回傳  帳本未解決  帳本補回  掃描看不到",
   );
-  console.log("─".repeat(94));
+  console.log("─".repeat(80));
 
   for (const symbol of SYMBOLS) {
     for (const tf of TIMEFRAMES) {
@@ -105,7 +63,6 @@ async function main(): Promise<void> {
 
       const spanDays = ((candles[candles.length - 1].time - candles[0].time) / DAY).toFixed(1);
 
-      // What the engine reports right now.
       const res = analyzeLiquidity(candles, tf, "crypto");
       const engineIds = new Set(
         res.pools.map((p) =>
@@ -113,82 +70,66 @@ async function main(): Promise<void> {
         ),
       );
 
-      // What the ledger holds and still considers unresolved.
       const persisted = store
         .listLevels(symbol, tf)
         .filter((l) => l.state === "ACTIVE" || l.state === "APPROACHING" || l.state === "TOUCHED");
 
-      const missing = persisted.filter((l) => !engineIds.has(l.id));
-      const missingOver7 = missing.filter((l) => (nowSec - l.formedAt) / DAY > 7);
+      // Levels the engine cannot see, put through the same restore path a scan
+      // uses. Restored ones are visible to a scan; the rest tell us why.
+      const candidates = persisted.filter((l) => !engineIds.has(l.id));
+      const outcome = restorePersistedLevels({
+        candidates, candles, timeframe: tf, engineIds,
+      });
 
-      for (const l of missing) {
-        const kind = classifyMissing(l, candles, tf);
-        kindCounts[kind]++;
-        if (kind === "truncated" || kind === "consumed") {
-          noteworthy.push({
-            symbol, tf, price: l.price, kind,
-            ageDays: Math.floor((nowSec - l.formedAt) / DAY),
-            state: l.state,
+      for (const s of outcome.skipped) {
+        if (s.reason === "in-engine-output") continue; // not a candidate
+        reasons[s.reason] = (reasons[s.reason] ?? 0) + 1;
+        const l = candidates.find((c) => c.id === s.id);
+        if (l && s.reason !== "superseded") {
+          unseenDetail.push({
+            symbol, tf, price: l.price, reason: s.reason,
+            ageDays: Math.floor((nowSec - l.formedAt) / DAY), state: l.state,
           });
         }
       }
 
+      const unseen = outcome.skipped.filter((s) => s.reason !== "in-engine-output").length;
+
       totalPersisted += persisted.length;
       totalEngine += engineIds.size;
-      totalMissing += missing.length;
-
-      for (const l of missingOver7) {
-        missingOld.push({
-          symbol,
-          tf,
-          price: l.price,
-          ageDays: Math.floor((nowSec - l.formedAt) / DAY),
-          state: l.state,
-        });
-      }
+      totalRecovered += outcome.restored.length;
+      totalUnseen += unseen;
 
       console.log(
-        `${symbol.padEnd(13)} ${tf.padEnd(4)} ${String(candles.length).padStart(8)} ` +
-        `${spanDays.padStart(11)} ${String(engineIds.size).padStart(9)} ` +
-        `${String(persisted.length).padStart(11)} ${String(missing.length).padStart(11)} ` +
-        `${String(missingOver7.length).padStart(9)}`,
+        `${symbol.padEnd(13)} ${tf.padEnd(4)} ${spanDays.padStart(8)} ${String(engineIds.size).padStart(9)} ` +
+        `${String(persisted.length).padStart(11)} ${String(outcome.restored.length).padStart(9)} ` +
+        `${String(unseen).padStart(11)}`,
       );
     }
   }
 
-  console.log("─".repeat(94));
+  console.log("─".repeat(80));
   console.log(
-    `\n帳本未解決合計 ${totalPersisted}｜引擎回傳合計 ${totalEngine}｜引擎看不到 ${totalMissing}`,
+    `\n帳本未解決合計 ${totalPersisted}｜引擎直接回傳 ${totalEngine}｜` +
+    `帳本補回 ${totalRecovered}｜掃描仍看不到 ${totalUnseen}`,
   );
 
-  if (missingOld.length > 0) {
-    console.log(`\n其中「>7 天且引擎看不到」的 level（前 25 筆）：`);
-    for (const m of missingOld.slice(0, 25)) {
-      console.log(
-        `  ${m.symbol} ${m.tf.toUpperCase()} ${m.price} — 年齡 ${m.ageDays} 天，帳本狀態 ${m.state}`,
-      );
-    }
-    console.log(`  …共 ${missingOld.length} 筆`);
-  } else {
-    console.log("\n沒有「>7 天且引擎看不到」的 level —— 目前窗深足以涵蓋帳本中的未解決價位。");
-  }
+  console.log(`\n掃描看不到的原因：`);
+  console.log(`  已被更極端 pivot 取代（結構性失效，正確）：${reasons.superseded ?? 0}`);
+  console.log(`  已穿越但事件未入帳（真漏報）：${reasons.consumed ?? 0}`);
+  console.log(`  形成時間落在窗外（需要更深的歷史）：${reasons["formed-outside-window"] ?? 0}`);
+  console.log(`  帳本價位與 K 線極值不符（無法核對）：${reasons["price-mismatch"] ?? 0}`);
 
-  console.log(`\n引擎看不到的原因分類：`);
-  console.log(
-    `  已被更極端 pivot 取代（結構性失效，正確）：${kindCounts.superseded}`,
-  );
-  console.log(`  已穿越但事件未入帳（真漏報）：${kindCounts.consumed}`);
-  console.log(`  有效、未穿越、被 top-20 分數截掉（容量限制）：${kindCounts.truncated}`);
-  console.log(`  形成於窗外：${kindCounts["out-of-window"]}`);
-
-  if (noteworthy.length > 0) {
+  if (unseenDetail.length > 0) {
     console.log(`\n需要處理的案例（前 20 筆）：`);
-    for (const w of noteworthy.slice(0, 20)) {
+    for (const u of unseenDetail.slice(0, 20)) {
       console.log(
-        `  [${w.kind}] ${w.symbol} ${w.tf.toUpperCase()} ${w.price} — 年齡 ${w.ageDays} 天，帳本 ${w.state}`,
+        `  [${u.reason}] ${u.symbol} ${u.tf.toUpperCase()} ${u.price} — 年齡 ${u.ageDays} 天，帳本 ${u.state}`,
       );
     }
-    console.log(`  …共 ${noteworthy.length} 筆`);
+    console.log(`  …共 ${unseenDetail.length} 筆`);
+  } else {
+    console.log(`\n沒有需要處理的案例：掃描看得到每一個未解決價位。`);
   }
 
   console.log(

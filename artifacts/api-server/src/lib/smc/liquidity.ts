@@ -112,6 +112,61 @@ function estimateProbabilityOfSweep(
   ));
 }
 
+// ── Output selection ────────────────────────────────────────────────────────
+
+/**
+ * Upper bound on how many levels are reported per symbol/timeframe.
+ *
+ * Preserved from upstream so the shape of the output does not change. What
+ * changed is WHO fills these slots — see selectReportedPools.
+ */
+export const LIQUIDITY_POOL_OUTPUT_LIMIT = 20;
+
+/**
+ * Choose which of the detected levels to report.
+ *
+ * This used to be a plain `sort by score, take 20`. That was wrong for a
+ * monitoring product, in a way measurement made concrete: `score` carries a
+ * recency decay, so ranking everything together let AGE decide which levels
+ * survived. Across 45 symbols x 1H/4H against the live ledger, two levels were
+ * valid, untouched, older than a week (18 and 20 days), and simply outscored —
+ * dropped from the output for no reason other than being old. Consumed levels
+ * also competed with a 1.5x displacement boost, so a level that had already been
+ * taken could occupy a slot a live one needed.
+ *
+ * The rule now:
+ *
+ *   ALWAYS REPORTED   every unresolved level, plus any level settled by the most
+ *                     recent completed candle. Neither may be displaced by
+ *                     something fresher, because age is not a reason for a live
+ *                     level to disappear — it leaves when price interacts with
+ *                     it, not when a calendar turns. Just-settled levels are
+ *                     guaranteed for the same reason: the newest SWEPT/BROKEN is
+ *                     an event, and it must not lose a slot to older history.
+ *
+ *   FILLS REMAINING SLOTS   everything else, best score first, up to the limit.
+ *
+ * The always-reported set is small in practice (unresolved levels per symbol and
+ * timeframe measured in the low tens), so the limit still shapes the output
+ * without ever truncating it on the basis of age.
+ */
+export function selectReportedPools(
+  pools: LiquidityPool[],
+  lastClosedCandleTime: number | null,
+  limit: number = LIQUIDITY_POOL_OUTPUT_LIMIT,
+): LiquidityPool[] {
+  const settledOnLastCandle = (p: LiquidityPool): boolean =>
+    p.interactionAt !== null && p.interactionAt === lastClosedCandleTime
+    && (p.interaction === "SWEPT" || p.interaction === "BROKEN");
+
+  const byScore = [...pools].sort((a, b) => b.score - a.score);
+  const guaranteed = byScore.filter((p) => !p.wasSwept || settledOnLastCandle(p));
+  const optional = byScore.filter((p) => !guaranteed.includes(p));
+
+  const remaining = Math.max(0, limit - guaranteed.length);
+  return [...guaranteed, ...optional.slice(0, remaining)];
+}
+
 // ── Analyzer ────────────────────────────────────────────────────────────────
 
 export function analyzeLiquidity(candles: Candle[], timeframe: string, market: string): LiquidityResult {
@@ -221,22 +276,7 @@ export function analyzeLiquidity(candles: Candle[], timeframe: string, market: s
     if (isLocalLow)  pools.push(buildPool(lo, "SSL"));
   }
 
-  // MEASURED CONSEQUENCE OF THIS CUT (2026-09-20, 45 symbols x 1H/4H):
-  // of 28 persisted-but-unreturned levels, 26 were legitimately superseded (a
-  // more extreme pivot formed nearby) and 0 were missed events — but 2 were
-  // valid, untouched, and simply outscored. Both were older than 7 days
-  // (18 and 20 days), because `score` carries a recency decay whose half-life
-  // is 200 bars (~8 days on 1H). Age therefore removes levels here, indirectly:
-  // not by any rule that says "too old", but by losing a ranking contest.
-  //
-  // Consumed levels also compete for these slots with a 1.5x displacement
-  // boost, so a taken level can occupy a slot a live one needed.
-  //
-  // Left as-is deliberately. Raising the cut, or selecting unresolved levels
-  // before capping, would change what the engine reports — that is a product
-  // decision, not a bug fix to make quietly inside detection code.
-  const sortedByScore = [...pools].sort((a, b) => b.score - a.score);
-  const topPools      = sortedByScore.slice(0, 20);
+  const topPools      = selectReportedPools(pools, candles[n - 1]?.time ?? null);
   const activePools   = topPools.filter(p => !p.wasSwept);
   const bslPools      = activePools.filter(p => p.type === "BSL" && p.price > currentPrice);
   const sslPools      = activePools.filter(p => p.type === "SSL" && p.price < currentPrice);

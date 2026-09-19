@@ -270,40 +270,79 @@ each level's lifecycle:
 - **A liquidity level does not expire merely because of age**; an unresolved
   level remains available beyond seven days until a structural state resolves
   or invalidates it
+- Unresolved levels the engine can no longer reach (index drifted out of scan
+  range) are **restored from the ledger**, each one re-verified first
 - Event/dedup retention and liquidity-level validity are separate concerns
 - The ledger survives process restarts
 
-### 5b. History depth audit (measured, not assumed)
+### 5b. History depth and lifetime audit (measured, not assumed)
 
-Removing a seven-day expiry is only half the correction. A level is visible to a
-scan only while it sits inside the candle window, so **the window depth is the
-real horizon**:
+Removing a seven-day expiry was only half the correction. A full comparison
+against the live ledger turned up **two real mechanisms that make an old level
+disappear** — neither is a seven-day rule, but both have the same effect.
+
+#### Mechanism one: the index drifts out of scan range
+
+The pivot scan starts `windowSize` bars into the array, because a swing point
+needs context on both sides. The candle window slides forward, so a level's index
+drifts leftward; once it crosses that start the engine stops seeing it — while
+the candle is still loaded.
+
+Live case: `PENGUUSDT 1H BSL 0.009333`, sitting at index 18 of 499 (the scan
+begins at 20), formed 20 days earlier.
+
+#### Mechanism two: losing the score contest
+
+The engine returns only the top 20 by score, and `score` carries a recency decay
+(half-life 200 bars ≈ 8 days on 1H). Old levels get squeezed out — and consumed
+levels compete for the same slots with a 1.5x boost, so a taken level can occupy
+one a live level needed.
+
+Live case: `BTWUSDT 1H BSL 0.38129`, 18 days old, valid and untouched, outside
+the top 20.
+
+#### The fix
+
+| Mechanism | Approach |
+|---|---|
+| Score contest | Output selection now keeps **every unresolved level**, with consumed levels filling the remaining slots; freshly settled events are guaranteed a slot too |
+| Index drift | **Restore from the ledger**, re-verifying each candidate with the engine's own classifier before trusting it |
+
+Restoration does not trust the ledger blindly. A ledger row records last-known
+state and cannot tell "still live" from "superseded", so every candidate is
+re-checked against the candles: traded through → history; superseded by a more
+extreme pivot → excluded; recorded price disagreeing with its candle → not used.
+**None of those three is restored.**
+
+Restored levels go through the **identical** downstream path — standing state,
+persistence, same-area suppression, event detection, approach test. There is no
+parallel route.
+
+#### Window depth
 
 | Timeframe | Loaded per scan | Equivalent depth |
 |---|---|---|
 | 1H | 500 candles | 20.8 days |
 | 4H | 500 candles | 83.3 days |
 
-Checked against the live ledger (45 symbols x 1H/4H):
+#### Full comparison after the fix (45 symbols x 1H/4H)
 
-| Measure | Result |
+| Measure | Number |
 |---|---|
-| Unresolved levels on record | 455 |
-| **Falling outside the candle window** | **0** |
-| Returned by the engine | 1,417 |
+| Unresolved levels on record | 457 |
+| Returned directly by the engine | 1,417 |
+| Recovered from the ledger | 1 |
+| **Still invisible to a scan** | **26** |
 
-The 28 levels the engine did not return, classified by cause:
+All 26 were superseded by a more extreme pivot — the existing structural
+invalidation rule, working as intended.
 
 | Cause | Count | Verdict |
 |---|---|---|
-| Superseded by a more extreme pivot (existing structural invalidation) | 26 | ✅ correct |
-| Traded through but the event never reached the ledger | 0 | ✅ no missed events |
-| Valid, untouched, dropped by the engine's top-20 score cut | 2 | ⚠️ known limitation |
-
-Those two were 18 and 20 days old. The engine's score carries a recency decay
-(half-life 200 bars ≈ 8 days on 1H), so an old level loses a ranking contest and
-gets squeezed out. That is not a seven-day rule, but the effect rhymes with one —
-and it is flagged in the code rather than changed quietly.
+| Superseded by a more extreme pivot | 26 | ✅ correct |
+| Traded through but the event never reached the ledger | **0** | ✅ |
+| Formed outside the window | **0** | ✅ |
+| Recorded price disagreed with its candle | **0** | ✅ |
 
 `candle-depth.test.ts` guards the depth: narrowing `SCAN_CANDLE_LIMIT` so it no
 longer spans seven days fails the suite.
@@ -311,10 +350,10 @@ longer spans seven days fails the suite.
 Reproduce:
 
 ```bash
-# Compare ledger vs engine output per symbol, classified by cause
+# Per-symbol comparison, using the production restore path rather than a copy
 npx tsx artifacts/api-server/src/scripts/measure-level-coverage.ts BTCUSDT,ETHUSDT 1h,4h
 
-# Ask why the engine omits one specific level
+# One price: does the engine see it, does the ledger recover it, and if not why
 npx tsx artifacts/api-server/src/scripts/explain-missing-level.ts BTCUSDT 1h 81181.8
 ```
 

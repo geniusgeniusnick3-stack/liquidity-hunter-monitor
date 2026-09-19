@@ -20,6 +20,8 @@ import { loadConfig } from "../config/index.js";
 import { fetchKlines } from "../market/futures.js";
 import type { Candle } from "../smc/types.js";
 import { analyzeLiquidity } from "../smc/liquidity.js";
+import type { LiquidityPool } from "../smc/types.js";
+import { restorePersistedLevels } from "./RestoredLevels.js";
 import { formatApproaching, formatSweepGroup, type LiquiditySide } from "../notify/formatters.js";
 import { AlertDeduplicator, liquidityLevelId, type AlertIdentity } from "../events/Deduplicator.js";
 import { getLiquidityStore } from "../persistence/LiquidityStore.js";
@@ -300,9 +302,17 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
         // detection so a single-symbol query can show the whole picture.
         const levels: LevelSnapshot[] = [];
 
-        for (const pool of res.pools) {
+        // One handler for every level this pass considers — engine-detected or
+        // restored from the ledger. Two sources, one path: the standing state,
+        // the ledger write, same-area suppression, event detection and the
+        // approach test are identical for both, so a restored level cannot
+        // drift into behaving differently from a detected one.
+        const seenLevelIds = new Set<string>();
+
+        const handlePool = (pool: LiquidityPool): void => {
           const side: LiquiditySide = pool.type === "SSL" ? "SSL" : "BSL";
           const levelId = liquidityLevelId(symbol, tf, side, pool.time, pool.price);
+          seenLevelIds.add(levelId);
 
           if (wantSnapshots) {
             levels.push({
@@ -357,7 +367,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
                 priorState: priorTaken.state,
                 priorAt: priorTaken.sweptAt ?? priorTaken.brokenAt ?? priorTaken.stateChangedAt,
               });
-              continue;
+              return;
             }
           }
 
@@ -381,7 +391,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
                 close: pool.interactionCandle.close,
               });
             }
-            continue;
+            return;
           }
 
           // Approaching and still untaken.
@@ -397,7 +407,36 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
               });
             }
           }
+        };
+
+        for (const pool of res.pools) handlePool(pool);
+
+        // ── Levels the engine can no longer see ──
+        //
+        // The pivot scan begins `windowSize` bars into the array, so a level's
+        // index drifting past that boundary as the window slides forward takes
+        // it out of the engine's reach even though its candle is still loaded.
+        // The ledger remembers it; this re-verifies it against the candles
+        // before trusting it (see RestoredLevels).
+        //
+        // Unresolved rows only: a level already SWEPT or BROKEN is history, and
+        // a fresh take on it would arrive through the engine's own output.
+        const candidates = store
+          .listLevels(symbol, tf)
+          .filter((l) => l.state === "ACTIVE" || l.state === "APPROACHING" || l.state === "TOUCHED");
+
+        const restore = restorePersistedLevels({
+          candidates,
+          candles,
+          timeframe: tf,
+          engineIds: seenLevelIds,
+        });
+        for (const pool of restore.restored) handlePool(pool);
+
+        if (restore.restored.length > 0) {
+          log(`restored ${restore.restored.length} level(s) beyond the engine's reach for ${symbol} ${tf}`);
         }
+
         if (wantSnapshots) {
           snapshots.push({ symbol, timeframe: tf, currentPrice, levels });
         }
