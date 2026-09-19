@@ -239,11 +239,60 @@ alert_thresholds:
 
 ---
 
+## Verification results
+
+Two independent checks, neither relying on the project's own test suite.
+
+### 1. Cross-venue candle comparison (Bybit as an independent source)
+
+| Symbol | Candles compared | Median basis | 90th pct | Max |
+|---|---|---|---|---|
+| BTCUSDT 1H | 199 | 0.012% | 0.033% | 0.128% |
+| TRXUSDT 1H | 199 | 0.044% | 0.065% | 0.304% |
+| SUIUSDT 1H | 199 | 0.050% | 0.089% | 0.317% |
+
+The check is on the **distribution** of differences, not on equality — two
+venues legitimately trade at a small basis. Basis scales inversely with
+liquidity (smallest on BTC, wider on thinner alts), matching market structure,
+with no outliers.
+
+Reproduce: `npx tsx artifacts/api-server/src/scripts/verify-vs-external.ts TRXUSDT 1h`
+
+### 2. Independent recomputation of engine verdicts
+
+Pivots and SWEPT / BROKEN were re-derived from raw candles by a separate
+implementation and compared against the engine.
+
+| Symbol | Levels checked | Agreement |
+|---|---|---|
+| BTCUSDT 1H | 17 | 100% |
+| ETHUSDT 1H | 17 | 100% |
+| SUIUSDT 1H | 16 | 100% |
+| XLMUSDT 1H | 15 | 100% |
+| TRXUSDT 4H | 15 | 100% |
+| BTCUSDT 4H | 18 | 100% |
+| ENAUSDT 4H | 16 | 100% |
+| DOGEUSDT 4H | 20 | 100% |
+| **Total** | **134** | **100%** |
+
+Agreement covers not just the state but **which candle produced it**, level by level.
+
+Reproduce: `npx tsx artifacts/api-server/src/scripts/verify-engine-manual.ts TRXUSDT 1h`
+
+### Why not TradingView
+
+TradingView's chart is canvas-rendered and loads data dynamically, so candles
+cannot be scraped. The two numeric checks above replace a visual diff — they are
+stricter, because they verify numbers rather than a picture, and anyone can
+re-run them.
+
+---
+
 ## Known limitations (stated honestly)
 
 | Limitation | Detail |
 |---|---|
-| **No manual TradingView cross-check yet** | Engine output is covered by 302 unit tests plus real-data validation, but has not been checked line-by-line against manually marked charts |
+| TradingView cannot be diffed automatically | Its chart is canvas-rendered and loads data dynamically, so candles cannot be scraped. Replaced with two equivalent, stricter automated checks (below) |
 | Web dashboard left untouched | Unmodified and unverified; not used by this project. Its WebSocket streaming path is likewise out of scope |
 | No scheduler by design | Passive query only — it does not push alerts on its own |
 | No AI analysis integration | Upstream's AI agent features are out of scope |

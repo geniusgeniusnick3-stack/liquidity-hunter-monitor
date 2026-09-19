@@ -50,7 +50,9 @@ function tfSeconds(tf: string): number {
 async function fetchBybit(symbol: string, tf: string, limit: number): Promise<Bar[]> {
   const url = `${BYBIT_REST}?category=linear&symbol=${symbol}&interval=${bybitInterval(tf)}&limit=${Math.min(limit, 1000)}`;
   const res = await fetch(url);
-  const json = await res.json();
+  const json = (await res.json().catch(() => null)) as
+    | { result?: { list?: string[][] }; retMsg?: string }
+    | null;
   const rows: string[][] = json?.result?.list ?? [];
   if (!rows.length) {
     throw new Error(`Bybit 無資料：${symbol} ${tf} — ${json?.retMsg ?? "unknown"}`);
