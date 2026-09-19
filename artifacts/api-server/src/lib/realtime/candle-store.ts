@@ -28,7 +28,7 @@ type StoreKey = string; // `${symbol}|${timeframe}`
 
 // ── Store ────────────────────────────────────────────────────────────────────────
 
-class CandleStore extends EventEmitter {
+export class CandleStore extends EventEmitter {
   /** Closed candles per symbol|timeframe (sorted by time ascending) */
   private closed: Map<StoreKey, Candle[]> = new Map();
 
@@ -77,21 +77,37 @@ class CandleStore extends EventEmitter {
   // ── Query ───────────────────────────────────────────────────────────────────
 
   /** Get all candles for a symbol/timeframe (closed + current open) */
+  /**
+   * CLOSED candles only, oldest → newest.
+   *
+   * This is the series the SMC engine consumes, and the engine assumes its last
+   * element is a FINISHED bar (pivot confirmation, sweep/break classification and
+   * "did the candle close back inside" all depend on it).
+   *
+   * Previously this returned the forming candle as the last element, which meant
+   * every one of the ~18 engine call sites was silently analysing an unfinished
+   * bar — a live price masquerading as a close. Callers that genuinely want the
+   * unfinished bar must use getCandlesWithForming() or read currentCandle.
+   */
   getCandles(symbol: string, timeframe: string): Candle[] {
+    return this.closed.get(this.key(symbol, timeframe)) ?? [];
+  }
+
+  /**
+   * Closed candles plus the currently-forming one, for display/liveness only.
+   * Do NOT feed this to the SMC engine.
+   */
+  getCandlesWithForming(symbol: string, timeframe: string): Candle[] {
     const key = this.key(symbol, timeframe);
     const closed = this.closed.get(key) ?? [];
     const open = this.openCandle.get(key);
+    if (!open) return closed;
 
-    if (open) {
-      // Check if the open candle is already in the closed list
-      const lastClosed = closed[closed.length - 1];
-      if (lastClosed && lastClosed.time === open.time) {
-        // Already in closed list, just return closed
-        return closed;
-      }
-      return [...closed, open];
-    }
-    return closed;
+    // Guard against the forming candle already having been archived as closed.
+    const lastClosed = closed[closed.length - 1];
+    if (lastClosed && lastClosed.time === open.time) return closed;
+
+    return [...closed, open];
   }
 
   /** Get a complete snapshot for a symbol/timeframe */

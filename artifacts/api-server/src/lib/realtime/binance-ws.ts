@@ -1,7 +1,7 @@
 import WebSocket from "ws";
-import https from "https";
 import { logger } from "../logger.js";
 import { candleStore, type CandleUpdate } from "./candle-store.js";
+import { fetchKlines } from "../market/futures.js";
 import type { Candle } from "../smc/types.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────────
@@ -25,16 +25,19 @@ interface BinanceKlineEvent {
   };
 }
 
-// Binance endpoints — tried in order until one works
-// REST mirrors WS: index 0 = US, index 1 = global
-const WS_ENDPOINTS = [
-  "wss://stream.binance.us:9443/ws",
-  "wss://stream.binance.com:9443/ws",
-];
+/** Combined-stream envelope: every message arrives wrapped as {stream, data}. */
+interface CombinedStreamMessage {
+  stream: string;
+  data: BinanceKlineEvent;
+}
 
-const REST_ENDPOINTS = [
-  "https://api.binance.us",
-  "https://api.binance.com",
+// Binance USDT-M futures streams — the GLOBAL market (REQUIREMENTS §3).
+// Mirrors are listed in order; every one serves the same market, so switching
+// a mirror changes only the route, never the data. Binance US endpoints were
+// removed deliberately: fapi/fstream only.
+const WS_STREAM_HOSTS = [
+  "wss://fstream.binance.com",
+  "wss://fstream1.binance.com",
 ];
 
 const TF_TO_BINANCE: Record<string, string> = {
@@ -46,91 +49,30 @@ const TF_TO_BINANCE: Record<string, string> = {
 // ── Historical backfill ──────────────────────────────────────────────────────────
 
 /**
- * Fetch historical closed klines from Binance REST API.
- * Returns up to `limit` candles sorted oldest→newest, excluding the current
- * forming candle (the one whose time matches the WebSocket's open candle).
+ * Fetch historical closed klines for seeding the candle store.
+ *
+ * Delegates to the shared futures client so the WebSocket path and the REST
+ * analysis path read the exact same market, with the same timeout/retry/mirror
+ * policy. Returns [] on failure so subscriptions still proceed on live data.
  */
 async function fetchHistoricalKlines(
   symbol: string,
   timeframe: string,
   limit = 300,
 ): Promise<Candle[]> {
-  const binanceInterval = TF_TO_BINANCE[timeframe];
-  if (!binanceInterval) return [];
+  if (!TF_TO_BINANCE[timeframe]) return [];
 
-  // Try REST endpoints in order (same index strategy as WS)
-  for (let i = 0; i < REST_ENDPOINTS.length; i++) {
-    try {
-      const base = REST_ENDPOINTS[i];
-      const url = `${base}/api/v3/klines?symbol=${symbol.toUpperCase()}&interval=${binanceInterval}&limit=${limit}`;
-
-      const data = await restGet(url);
-      if (!data || !Array.isArray(data)) continue;
-
-      const candles: Candle[] = [];
-      let lastCloseTime = 0;
-      for (const row of data) {
-        if (!Array.isArray(row) || row.length < 6) continue;
-        const openTime = Number(row[0]);
-        lastCloseTime = Number(row[6]);
-
-        candles.push({
-          time: Math.floor(openTime / 1000),
-          open: parseFloat(row[1] as string),
-          high: parseFloat(row[2] as string),
-          low: parseFloat(row[3] as string),
-          close: parseFloat(row[4] as string),
-          volume: parseFloat(row[5] as string),
-        });
-      }
-
-      // Exclude the last candle if it's still forming (closeTime in the future).
-      // Binance REST returns the current forming candle last; we want WS to handle it.
-      if (candles.length > 0 && lastCloseTime > Date.now()) {
-        candles.pop();
-      }
-
-      logger.info({
-        symbol,
-        timeframe,
-        count: candles.length,
-        endpoint: base,
-      }, "Historical klines fetched");
-
-      return candles;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ symbol, timeframe, endpoint: REST_ENDPOINTS[i], err: msg }, "Historical fetch failed, trying next endpoint");
-    }
+  try {
+    const candles = await fetchKlines(symbol, timeframe, limit);
+    logger.info({ symbol, timeframe, count: candles.length }, "Historical futures klines fetched");
+    return candles;
+  } catch (err) {
+    logger.warn(
+      { symbol, timeframe, err: err instanceof Error ? err.message : String(err) },
+      "Historical futures kline fetch failed — continuing with WS data only",
+    );
+    return [];
   }
-
-  logger.warn({ symbol, timeframe }, "All historical kline endpoints failed");
-  return [];
-}
-
-/** Simple HTTPS GET returning parsed JSON */
-function restGet(url: string): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const req = https.get(url, { timeout: 10_000 }, (res) => {
-      // 451 = geo-restricted, try next endpoint
-      if (res.statusCode === 451) {
-        reject(new Error("HTTP 451"));
-        return;
-      }
-      if (res.statusCode !== 200) {
-        reject(new Error(`HTTP ${res.statusCode}`));
-        return;
-      }
-      let body = "";
-      res.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-      res.on("end", () => {
-        try { resolve(JSON.parse(body)); }
-        catch (e) { reject(e); }
-      });
-    });
-    req.on("error", reject);
-    req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
-  });
 }
 
 // ── Manager ──────────────────────────────────────────────────────────────────────
@@ -144,6 +86,8 @@ class BinanceWsManager {
   private maxReconnectDelay = 30_000;
   private isShutdown = false;
   private endpointIndex = 0;
+  /** Last kline timestamp seen per symbol|tf — used by the health monitor (§23). */
+  private lastMessageAt = 0;
 
   /**
    * Subscribe to real-time kline data for a symbol + timeframes.
@@ -215,11 +159,12 @@ class BinanceWsManager {
       return;
     }
 
-    const base = WS_ENDPOINTS[this.endpointIndex % WS_ENDPOINTS.length];
-    const url = `${base}/${streams.join("/")}`;
+    const base = WS_STREAM_HOSTS[this.endpointIndex % WS_STREAM_HOSTS.length];
+    // Futures combined streams use the /stream?streams= form.
+    const url = `${base}/stream?streams=${streams.join("/")}`;
     const symbols = [...this.activeSymbols.keys()];
 
-    logger.info({ url, symbols, streamCount: streams.length }, "Binance WS connecting");
+    logger.info({ url, symbols, streamCount: streams.length }, "Binance futures WS connecting");
 
     // Close existing connection
     this.disconnect();
@@ -227,14 +172,17 @@ class BinanceWsManager {
     this.ws = new WebSocket(url);
 
     this.ws.on("open", () => {
-      logger.info({ symbols, endpoint: base }, "Binance WS connected");
+      logger.info({ symbols, endpoint: base }, "Binance futures WS connected");
       this.reconnectDelay = 1000;
     });
 
     this.ws.on("message", (data: WebSocket.Data) => {
       try {
-        const raw = JSON.parse(data.toString()) as BinanceKlineEvent;
-        if (raw.e !== "kline") return;
+        const parsed = JSON.parse(data.toString()) as BinanceKlineEvent | CombinedStreamMessage;
+        // Combined streams wrap the payload; accept both shapes so a
+        // single-stream endpoint or a mirror quirk never silently drops data.
+        const raw = "data" in parsed ? parsed.data : parsed;
+        if (!raw || raw.e !== "kline") return;
 
         const k = raw.k;
         const tf = this.binanceTfToApp(k.i);
@@ -252,6 +200,7 @@ class BinanceWsManager {
           isClosed: k.x,
         };
 
+        this.lastMessageAt = Date.now();
         candleStore.applyUpdate(update);
       } catch {
         // skip malformed messages
@@ -259,18 +208,18 @@ class BinanceWsManager {
     });
 
     this.ws.on("close", (code, reason) => {
-      logger.warn({ code, reason: reason.toString() }, "Binance WS closed");
+      logger.warn({ code, reason: reason.toString() }, "Binance futures WS closed");
       this.ws = null;
       this.scheduleReconnect();
     });
 
     this.ws.on("error", (err) => {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.error({ err: msg, endpoint: base }, "Binance WS error");
+      logger.error({ err: msg, endpoint: base }, "Binance futures WS error");
 
-      if (msg.includes("451") && this.endpointIndex + 1 < WS_ENDPOINTS.length) {
+      if (msg.includes("451") && this.endpointIndex + 1 < WS_STREAM_HOSTS.length) {
         this.endpointIndex++;
-        logger.info({ nextEndpoint: WS_ENDPOINTS[this.endpointIndex] }, "Switching Binance endpoint due to 451");
+        logger.info({ nextEndpoint: WS_STREAM_HOSTS[this.endpointIndex] }, "Switching Binance stream host due to 451");
         this.reconnectDelay = 100;
         this.scheduleReconnect();
         return;
@@ -280,10 +229,10 @@ class BinanceWsManager {
     });
 
     this.ws.on("unexpected-response", (_req, res) => {
-      logger.error({ status: res.statusCode }, "Binance WS unexpected response");
-      if (res.statusCode === 451 && this.endpointIndex + 1 < WS_ENDPOINTS.length) {
+      logger.error({ status: res.statusCode }, "Binance futures WS unexpected response");
+      if (res.statusCode === 451 && this.endpointIndex + 1 < WS_STREAM_HOSTS.length) {
         this.endpointIndex++;
-        logger.info({ nextEndpoint: WS_ENDPOINTS[this.endpointIndex] }, "Switching Binance endpoint due to 451");
+        logger.info({ nextEndpoint: WS_STREAM_HOSTS[this.endpointIndex] }, "Switching Binance stream host due to 451");
         this.reconnectDelay = 100;
         this.scheduleReconnect();
       }
@@ -298,7 +247,7 @@ class BinanceWsManager {
       this.reconnectTimer = null;
     }
     this.disconnect();
-    logger.info("Binance WS manager shut down");
+    logger.info("Binance futures WS manager shut down");
   }
 
   private disconnect(): void {
@@ -313,7 +262,7 @@ class BinanceWsManager {
     if (this.isShutdown || this.activeSymbols.size === 0) return;
     if (this.reconnectTimer) return;
 
-    logger.info({ delay: this.reconnectDelay }, "Scheduling Binance WS reconnect");
+    logger.info({ delay: this.reconnectDelay }, "Scheduling Binance futures WS reconnect");
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -331,9 +280,21 @@ class BinanceWsManager {
     }
     return null;
   }
+
+  /** Connection + freshness state for the health monitor (REQUIREMENTS §23). */
+  getConnectionStatus(): { connected: boolean; symbols: number; streams: number; lastMessageAt: number } {
+    const symbols = [...this.activeSymbols.keys()];
+    let streams = 0;
+    for (const tfs of this.activeSymbols.values()) streams += tfs.size;
+    return {
+      connected: this.ws !== null && this.ws.readyState === WebSocket.OPEN,
+      symbols: symbols.length,
+      streams,
+      lastMessageAt: this.lastMessageAt,
+    };
+  }
 }
 
-// Also remove the old StreamConfig interface and update exports
 // ── Singleton ─────────────────────────────────────────────────────────────────────
 
 export const binanceWs = new BinanceWsManager();
