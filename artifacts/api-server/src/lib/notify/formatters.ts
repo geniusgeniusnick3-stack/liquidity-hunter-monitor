@@ -244,6 +244,26 @@ export function formatSweepGroup(
 
 // ── User-facing scan reply ─────────────────────────────────────────────────
 
+/**
+ * A level as shown in a single-symbol snapshot.
+ * Mirrors ScanEngine.LevelSnapshot without importing from it.
+ */
+export interface ReplyLevel {
+  price: number;
+  side: LiquiditySide;
+  state: string;
+  taken: boolean;
+  distancePct: number;
+  interactionAt: number | null;
+}
+
+export interface ReplySnapshot {
+  symbol: string;
+  timeframe: string;
+  currentPrice: number;
+  levels: ReplyLevel[];
+}
+
 export interface ScanReplyInput {
   /** What was scanned, already humanised (e.g. "TRXUSDT 4H" or "all tracked symbols"). */
   scope: string;
@@ -254,6 +274,11 @@ export interface ScanReplyInput {
   latestCandleTime: number;
   scanned: number;
   failures: number;
+  /**
+   * Full standing state. When present for a single symbol, the reply becomes a
+   * snapshot instead of an event list — see formatScanReply.
+   */
+  snapshots?: ReplySnapshot[];
 }
 
 /**
@@ -287,6 +312,14 @@ export function formatScanReply(input: ScanReplyInput, lang: Language = DEFAULT_
 
   const blocks: string[] = [`${t.replyTitle}${sep}${input.scope}`];
 
+  // A single-symbol question deserves the standing picture, not a list of what
+  // happened to be new. Reporting "no events" for a symbol with six live levels
+  // is technically true and completely unhelpful.
+  const snap = input.snapshots?.length === 1 ? input.snapshots[0] : undefined;
+  if (snap) {
+    return formatSnapshot(snap, blocks[0], t, s, lang, time);
+  }
+
   if (input.events.length > 0) {
     const rows = [t.replyEventsHeading];
     for (const e of input.events) {
@@ -317,6 +350,79 @@ export function formatScanReply(input: ScanReplyInput, lang: Language = DEFAULT_
   }
   blocks.push(footer.join("\n"));
 
+  return blocks.join("\n\n");
+}
+
+/**
+ * The standing picture for one symbol/timeframe.
+ *
+ * Lists what is still in play above and below price, then what was recently
+ * taken. Untaken levels come first because those are what a trader is watching;
+ * taken levels are context.
+ *
+ * Distance is shown as a percentage of price rather than an absolute figure, so
+ * the display works the same for BTC and for a sub-cent altcoin.
+ */
+function formatSnapshot(
+  snap: ReplySnapshot,
+  header: string,
+  t: ReturnType<typeof uiFor>,
+  s: ReturnType<typeof stringsFor>,
+  lang: Language,
+  candleTime: string,
+): string {
+  const sep = lang === "en" ? " | " : "｜";
+  const colon = lang === "en" ? ": " : "：";
+  const listSep = lang === "en" ? ", " : "、";
+
+  const blocks: string[] = [
+    header,
+    `${t.snapCurrent} ${p(snap.currentPrice)}${sep}${snap.timeframe.toUpperCase()}`,
+  ];
+
+  const fmt = (l: ReplyLevel): string => {
+    const state = l.taken ? t.snapTaken : (l.state === "TOUCHED" ? t.snapTouched : t.snapUntaken);
+    // Absolute distance: the heading already says above/below, so a signed
+    // number would be redundant and reads as an error at a glance.
+    return `  ${p(l.price)}  ${t.snapDistance(Math.abs(l.distancePct))}  ${state}`;
+  };
+
+  const live = snap.levels.filter((l) => !l.taken);
+  const above = live.filter((l) => l.side === "BSL").sort((a, b) => a.price - b.price);
+  const below = live.filter((l) => l.side === "SSL").sort((a, b) => b.price - a.price);
+
+  if (above.length) {
+    blocks.push([t.snapAbove, ...above.map(fmt)].join("\n"));
+  }
+  if (below.length) {
+    blocks.push([t.snapBelow, ...below.map(fmt)].join("\n"));
+  }
+  if (!above.length && !below.length) {
+    blocks.push(t.snapNone);
+  }
+
+  // Recent consumption, newest first — context for why some levels are absent.
+  const taken = snap.levels
+    .filter((l) => l.taken && l.interactionAt)
+    .sort((a, b) => (b.interactionAt ?? 0) - (a.interactionAt ?? 0))
+    .slice(0, 5);
+
+  if (taken.length) {
+    const rows = [t.snapTakenHeading];
+    for (const l of taken) {
+      const when = l.interactionAt
+        ? new Date(l.interactionAt * 1000).toLocaleString("zh-TW", {
+            timeZone: "Asia/Taipei", hour12: false,
+            month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+          })
+        : "—";
+      const state = l.state === "BROKEN" ? s.stateBroken : s.stateSwept;
+      rows.push(`  ${l.side} ${p(l.price)}  ${when}  ${state}`);
+    }
+    blocks.push(rows.join("\n"));
+  }
+
+  blocks.push(t.replyFooter(1, candleTime));
   return blocks.join("\n\n");
 }
 

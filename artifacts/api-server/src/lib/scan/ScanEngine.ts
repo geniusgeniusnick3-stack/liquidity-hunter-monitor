@@ -74,6 +74,34 @@ export interface PendingAlert {
   label: string;
 }
 
+/**
+ * One level as it currently stands, for a single-symbol query.
+ *
+ * A market-wide scan reports events (what just happened). A single-symbol query
+ * needs the opposite: the standing picture — every level still in play plus the
+ * recent history. Reporting "no events" for a symbol with six live levels above
+ * and below price answers a question nobody asked.
+ */
+export interface LevelSnapshot {
+  price: number;
+  side: LiquiditySide;
+  state: string;
+  /** true = already consumed (SWEPT/BROKEN). */
+  taken: boolean;
+  /** Distance from current price, in percent; negative if below. */
+  distancePct: number;
+  formedAt: number;
+  interactionAt: number | null;
+  touches: number;
+}
+
+export interface SymbolSnapshot {
+  symbol: string;
+  timeframe: string;
+  currentPrice: number;
+  levels: LevelSnapshot[];
+}
+
 export interface ScanResult {
   events: ScanEvent[];
   approaches: ScanApproach[];
@@ -89,6 +117,14 @@ export interface ScanResult {
   eligibleCount: number;
   /** Language actually used, after env/user/config resolution. */
   language: Language;
+  /**
+   * Full standing state per symbol/timeframe.
+   *
+   * Populated only when the scan is narrow (an explicit symbol list), because
+   * carrying 55 symbols x 2 timeframes of levels would be a lot of data for a
+   * market-wide summary that does not display it.
+   */
+  snapshots: SymbolSnapshot[];
 }
 
 export interface ScanOptions {
@@ -207,6 +243,9 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
   const regionLookbackDays = config.liquidity.region_lookback_days;
 
   const groupMap = new Map<string, ScanEvent>();
+  // Only worth gathering when the caller asked about specific symbols.
+  const wantSnapshots = Boolean(options.symbols?.length);
+  const snapshots: SymbolSnapshot[] = [];
   const approachingRaw: ScanApproach[] = [];
   const historySkipped: ScanHistorySkip[] = [];
   let scanned = 0;
@@ -239,9 +278,26 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
         const currentPrice = lastClosed.close;
         const res = analyzeLiquidity(candles, tf, "crypto");
 
+        // Standing state for this symbol/timeframe, gathered alongside the event
+        // detection so a single-symbol query can show the whole picture.
+        const levels: LevelSnapshot[] = [];
+
         for (const pool of res.pools) {
           const side: LiquiditySide = pool.type === "SSL" ? "SSL" : "BSL";
           const levelId = liquidityLevelId(symbol, tf, side, pool.time, pool.price);
+
+          if (wantSnapshots) {
+            levels.push({
+              price: pool.price,
+              side,
+              state: pool.interaction,
+              taken: pool.wasSwept,
+              distancePct: (pool.price - currentPrice) / currentPrice * 100,
+              formedAt: pool.time,
+              interactionAt: pool.interactionAt,
+              touches: pool.touches,
+            });
+          }
 
           // Ledger write (§11): remember this level exists.
           store.upsertLevel({
@@ -323,6 +379,9 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
               });
             }
           }
+        }
+        if (wantSnapshots) {
+          snapshots.push({ symbol, timeframe: tf, currentPrice, levels });
         }
       } catch {
         failures++;
@@ -434,5 +493,6 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
     symbolCount: symbols.length,
     eligibleCount,
     language,
+    snapshots,
   };
 }

@@ -238,6 +238,19 @@ export interface UiStrings {
   replyApproachingHeading: string;
   replyFooter: (symbols: number, candle: string) => string;
   replyFailed: (failed: number, pairs: number) => string;
+
+  // ── Single-symbol snapshot ──
+  // Shown when the user asks about one symbol: the standing picture rather than
+  // a list of new events.
+  snapCurrent: string;
+  snapAbove: string;
+  snapBelow: string;
+  snapTaken: string;
+  snapUntaken: string;
+  snapTouched: string;
+  snapDistance: (pct: number) => string;
+  snapNone: string;
+  snapTakenHeading: string;
 }
 
 const UI_ZH_TW: UiStrings = {
@@ -305,6 +318,16 @@ ACTIVE 必須由使用者明確開啟，不會自動啟動。`,
   replyApproachingHeading: "接近中：",
   replyFooter: (s, c) => `追蹤 ${s} 個幣｜最新 K 線 ${c}`,
   replyFailed: (f, p) => `（其中 ${f}／${p} 組讀取失敗）`,
+
+  snapCurrent: "現價",
+  snapAbove: "上方流動性（BSL）",
+  snapBelow: "下方流動性（SSL）",
+  snapTaken: "已取走",
+  snapUntaken: "未觸及",
+  snapTouched: "已觸及",
+  snapDistance: (p) => `距 ${p.toFixed(2)}%`,
+  snapNone: "（無）",
+  snapTakenHeading: "近期已取走：",
 };
 
 const UI_ZH_CN: UiStrings = {
@@ -372,6 +395,16 @@ ACTIVE 必须由使用者明确开启，不会自动启动。`,
   replyApproachingHeading: "接近中：",
   replyFooter: (s, c) => `追踪 ${s} 个币｜最新 K 线 ${c}`,
   replyFailed: (f, p) => `（其中 ${f}／${p} 组读取失败）`,
+
+  snapCurrent: "现价",
+  snapAbove: "上方流动性（BSL）",
+  snapBelow: "下方流动性（SSL）",
+  snapTaken: "已取走",
+  snapUntaken: "未触及",
+  snapTouched: "已触及",
+  snapDistance: (p) => `距 ${p.toFixed(2)}%`,
+  snapNone: "（无）",
+  snapTakenHeading: "近期已取走：",
 };
 
 const UI_EN: UiStrings = {
@@ -439,6 +472,16 @@ ACTIVE must be enabled explicitly. It never starts on its own.`,
   replyApproachingHeading: "Approaching:",
   replyFooter: (s, c) => `Tracking ${s} symbols | Latest candle ${c}`,
   replyFailed: (f, p) => `(${f} of ${p} pairs failed to load)`,
+
+  snapCurrent: "Price",
+  snapAbove: "Liquidity above (BSL)",
+  snapBelow: "Liquidity below (SSL)",
+  snapTaken: "taken",
+  snapUntaken: "untaken",
+  snapTouched: "touched",
+  snapDistance: (p) => `${p.toFixed(2)}% away`,
+  snapNone: "(none)",
+  snapTakenHeading: "Recently taken:",
 };
 
 export const UI: Record<Language, UiStrings> = {

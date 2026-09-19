@@ -356,6 +356,9 @@ async function runScanner(
     latestCandleTime: result.latestCandleTime,
     scanned: result.scanned,
     failures: result.failures,
+    // For a single symbol the reply becomes the standing picture rather than an
+    // event list, which is what "how is TRXUSDT doing?" actually asks.
+    snapshots: result.snapshots,
   }, result.language);
 
   if (opts.echoToChat) {

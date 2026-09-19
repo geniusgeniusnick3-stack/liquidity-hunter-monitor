@@ -121,5 +121,61 @@ console.log("讀取失敗時誠實揭露");
   ok(text.includes("110"), "同時顯示總數");
 }
 
+console.log("─".repeat(60));
+console.log("單幣查詢必須顯示完整現況，不是「沒有事件」");
+
+{
+  // A real TRXUSDT 4H picture: six live levels, price in the middle of them.
+  const snapshot = {
+    symbol: "TRXUSDT",
+    timeframe: "4h",
+    currentPrice: 0.33792,
+    levels: [
+      { price: 0.33986, side: "BSL" as const, state: "NONE", taken: false, distancePct: 0.574, interactionAt: null },
+      { price: 0.34402, side: "BSL" as const, state: "NONE", taken: false, distancePct: 1.804, interactionAt: null },
+      { price: 0.35355, side: "BSL" as const, state: "NONE", taken: false, distancePct: 4.625, interactionAt: null },
+      { price: 0.3308, side: "SSL" as const, state: "NONE", taken: false, distancePct: -2.107, interactionAt: null },
+      { price: 0.32095, side: "SSL" as const, state: "TOUCHED", taken: false, distancePct: -5.02, interactionAt: null },
+      { price: 0.32075, side: "SSL" as const, state: "TOUCHED", taken: false, distancePct: -5.08, interactionAt: null },
+      { price: 0.33448, side: "SSL" as const, state: "BROKEN", taken: true, distancePct: -1.02, interactionAt: 1757980800 },
+    ],
+  };
+
+  for (const lang of LANGS) {
+    const text = formatScanReply({ ...empty, scope: "TRXUSDT 4H", snapshots: [snapshot] }, lang);
+
+    // The regression: this used to read "no events" for this exact symbol.
+    ok(!text.includes("沒有事件") && !text.includes("没有事件") && !text.includes("No events"),
+      `[${lang}] 不再回答「沒有事件」`);
+
+    // Every live level is listed.
+    for (const lvl of ["0.33986", "0.34402", "0.35355", "0.3308", "0.32095", "0.32075"]) {
+      ok(text.includes(lvl), `[${lang}] 列出活躍價位 ${lvl}`);
+    }
+
+    // Above / below are separated, and price is shown.
+    ok(text.includes("0.33792"), `[${lang}] 顯示現價`);
+
+    // Distance is absolute — a signed number under a "below" heading reads wrong.
+    ok(!text.includes("-2.11") && !text.includes("-5.02"),
+      `[${lang}] 距離不顯示負號（方向由標題表達）`);
+
+    // Recent consumption is shown as context.
+    ok(text.includes("0.33448"), `[${lang}] 列出近期已取走的價位`);
+
+    // And the whole point: a repeat is identical.
+    const again = formatScanReply({ ...empty, scope: "TRXUSDT 4H", snapshots: [snapshot] }, lang);
+    ok(text === again, `[${lang}] 再次查詢結果完全相同`);
+  }
+
+  // Market-wide (no snapshot) keeps the short event-style reply.
+  const wide = formatScanReply({ ...busy, snapshots: [] }, "zh-TW");
+  ok(wide.length < 400, "全市場查詢維持精簡");
+
+  // More than one snapshot → fall back to the event list.
+  const two = formatScanReply({ ...empty, snapshots: [snapshot, snapshot] }, "zh-TW");
+  ok(two.length > 0, "多個幣時不使用單幣快照模式");
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
