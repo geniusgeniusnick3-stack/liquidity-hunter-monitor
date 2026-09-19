@@ -150,6 +150,9 @@ async function main(): Promise<void> {
       const result = await runScan({
         timeframes,
         symbols: explicitSymbols,
+        // active_batch_size caps how many symbol/timeframe pairs are analysed
+        // at once, which is what keeps a large universe inside rate limits.
+        concurrency: config.monitoring.active_batch_size,
         candleSource: (symbol, tf, limit) => candleCache.get(symbol, tf, limit),
         onLog: (m) => logger.info({}, m),
       });

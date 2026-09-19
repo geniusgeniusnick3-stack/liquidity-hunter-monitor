@@ -101,6 +101,15 @@ export interface ScanOptions {
    * query should always hit the exchange.
    */
   candleSource?: (symbol: string, timeframe: string, limit: number) => Promise<Candle[]>;
+  /**
+   * How many symbol/timeframe pairs to analyse at once.
+   *
+   * This is the knob that keeps a large universe inside exchange rate limits:
+   * raising it finishes a scan sooner at the cost of burstier traffic. ACTIVE
+   * mode passes monitoring.active_batch_size; PASSIVE leaves it at the default
+   * because a one-off query has no reason to be conservative.
+   */
+  concurrency?: number;
 }
 
 // ── Timeframe display order ─────────────────────────────────────────────────
@@ -163,8 +172,22 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
   let failures = 0;
   let latestCandleTime = 0;
 
+  // Flatten to one work item per symbol/timeframe, then process with bounded
+  // concurrency. Sequential was fine for a handful of symbols but leaves a
+  // 50+ symbol universe needlessly slow.
+  const pairs: Array<{ symbol: string; tf: string }> = [];
   for (const symbol of symbols) {
-    for (const tf of timeframes) {
+    for (const tf of timeframes) pairs.push({ symbol, tf });
+  }
+
+  const concurrency = Math.max(1, options.concurrency ?? 5);
+  let cursor = 0;
+
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = cursor++;
+      if (i >= pairs.length) return;
+      const { symbol, tf } = pairs[i];
       try {
         const candles = await getCandles(symbol, tf, 500);
         if (candles.length < config.scanner.min_candles_required) continue;
@@ -264,7 +287,11 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
         failures++;
       }
     }
-  }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, pairs.length) }, () => worker()),
+  );
 
   // ── Cross-timeframe collapse: one price, one message ──
   // The same level is often a pivot on several timeframes at once. To a human
