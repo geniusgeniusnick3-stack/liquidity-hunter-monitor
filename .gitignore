@@ -56,3 +56,9 @@ graphify-out/
 # Dev artifacts
 attached_assets/
 docs-backup/
+
+# Runtime data — local scan ledger, never publish
+data/
+*.db
+*.db-shm
+*.db-wal

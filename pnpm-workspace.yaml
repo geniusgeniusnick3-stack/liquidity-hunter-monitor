@@ -4,6 +4,14 @@ packages:
   - lib/integrations/*
   - scripts
 
+allowBuilds:
+  # We use Node's built-in node:sqlite instead — no native build needed, and the
+  # esbuild bundle stays a single file. Explicitly denied so a stray dependency
+  # can never silently start compiling native code during install.
+  better-sqlite3: false
+  esbuild: true
+  tldjs: false
+
 autoInstallPeers: false
 
 catalog:

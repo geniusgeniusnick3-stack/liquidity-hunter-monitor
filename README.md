@@ -1,428 +1,268 @@
-# SMC Pulse Predict — Liquidity Hunter
+# Liquidity Hunter — On-Demand SMC Liquidity Monitor
 
-> **Real-time ICT/SMC market intelligence for crypto and forex traders.**
-> A full-stack web application that algorithmically detects institutional order flow concepts — Order Blocks, Fair Value Gaps, BOS/CHoCH, liquidity pools, and SMT divergence — and surfaces them through a multi-timeframe dashboard with an embedded AI analyst.
+> **It scans when you ask.** No auto-trading, no unsolicited push, no account APIs.
+
+An SMC (Smart Money Concepts) liquidity monitor for the Binance USDT-M perpetual
+market, built on top of the open-source
+[`GdotAiM/SMC-Liquidity-Hunter`](https://github.com/GdotAiM/SMC-Liquidity-Hunter).
+The upstream single-symbol web dashboard was reworked into an **on-demand
+market-wide scanner queried from Telegram**.
 
 ---
 
-## Vision
+## What this does
 
-Most retail traders lose because they see charts the wrong way. Institutions don't buy at support and sell at resistance — they hunt liquidity, create imbalance, and deliver price into equilibrium. SMC Pulse Predict translates the Inner Circle Trader (ICT) methodology into a live, automated analysis engine that processes OHLCV data and produces the same read a trained SMC analyst would perform manually, in seconds, across every timeframe simultaneously.
+It screens several hundred Binance USDT-M perpetual pairs, keeps the ones with
+enough liquidity, analyses their BSL / SSL liquidity with the SMC engine, and —
+**when you ask it to** — reports price events worth a human look.
 
----
+**It describes how price interacted with a liquidity level. It does not predict direction.**
 
-## Key Features
-
-| Feature | Description |
+| It says | It does not say |
 |---|---|
-| **Multi-TF Dashboard** | Scalp / Intraday / Swing / All modes with cascade bias computation across 7 timeframes |
-| **ICT Structure Engine** | ATR-normalised pivot detection → BOS / CHoCH classification → phase inference (Accumulation → Manipulation → Expansion) |
-| **Liquidity Hunter** | BSL / SSL / Equal Highs / Equal Lows pool detection with session-weighted scoring and probability-of-sweep |
-| **Order Block Detection** | Bullish & bearish OBs with breaker block classification, FVG confluence, and institutional confidence scoring |
-| **Fair Value Gap Engine** | FVG detection with fill-fraction tracking and inversion FVG identification |
-| **PD Array** | Premium / Discount / Equilibrium zone computation from dealing range |
-| **Daily Bias** | HTF 1D structure-primary bias (0.55–0.88 strength) used to gate lower-TF OB confidence |
-| **SMT Divergence** | Correlated-pair divergence detection (BTC/ETH, EUR/GBP) with magnitude + timing scoring |
-| **Draw on Liquidity** | Confluence-boosted target scoring that ranks BSL/SSL/OB/FVG as next price objectives |
-| **Visual Chart Layer** | TradingView Lightweight Charts (v5) with session backgrounds, OB/FVG rectangles, BOS/CHoCH markers, KZO lines |
-| **AI Agent System** | Fireworks AI (DeepSeek V4 Pro) — streaming Q&A + 4-agent sequential analysis pipeline + MCP tool-calling agent (11 autonomous tools) |
-| **MCP Tier 3** | FastMCP v4.3.2 server on port 3002 — 11 SMC tools, 2 resources, 1 prompt for external AI agent access |
-| **Broker Execution** | Broker-agnostic trade execution with REVIEW/LIVE mode toggle, Alpaca Paper API adapter, file-based mock broker |
-| **Broker Dashboard** | `/broker` page — account overview, open orders table, mode switch with typed-LIVE confirmation, execution log |
-| **Market Narrative** | Auto-generated institutional narrative string per report |
-| **Session State** | Real-time ICT session inference: Asian Range / London Expansion / NY Open / PM Distribution |
-| **Real-Time Price Feed** | Binance US WebSocket (crypto) + Finnhub WS / Yahoo polling (forex) with SSE push to browser |
-| **Live Price Badge** | Green pulsing indicator when real-time stream is connected, price updates in real-time |
-| **60s Cache** | In-memory TTL cache prevents repeated data-provider hits on dashboard refresh |
-| **Auto Candle-Close Refresh** | Server rebuilds SMC reports on candle close and pushes to browser — no polling needed |
+| "Price traded through this BSL; the completed 4H candle closed above it" | "Breakout — expect continuation" |
+| "Price is approaching this SSL, 0.29% away" | "This is an entry" |
+
+Every directional interpretation and every trading decision remains the user's
+responsibility. See [Non-Goals](#non-goals).
 
 ---
 
-## Screenshots
+## Relationship to the upstream project
 
-> _Open the app and hit the **CHART** button to see the visual layer._
+This project builds on **[Ntloso Ngubeni](https://github.com/GdotAiM)'s
+[SMC-Liquidity-Hunter](https://github.com/GdotAiM/SMC-Liquidity-Hunter)**
+(MIT License, © 2026).
 
-| Intelligence Dashboard | Chart View |
+Upstream provides a well-built SMC analysis engine — structure, order blocks,
+FVG, liquidity, PD arrays and SMT across 8 modules with 302 unit tests.
+**This project does not rewrite that engine.** It adds the data feed, universe
+selection, event lifecycle, persistence and a query interface around it.
+
+| | Upstream | This project |
+|---|---|---|
+| Purpose | Single-symbol web dashboard | Market-wide on-demand query |
+| Data source | Binance US spot + Yahoo Finance fallback | Binance global USDT-M perpetuals |
+| Symbol list | Hard-coded in source | Derived from liquidity metrics |
+| Liquidity state | `wasSwept: true / false` | Seven states + ATR tolerance |
+| Memory | None (recomputed each run) | SQLite ledger, survives restarts |
+| Alerts | None | Telegram (on demand) |
+| Web dashboard | Yes | **Left as-is, unused by this project** |
+
+---
+
+## What was implemented
+
+### 1. Data source correction (the most fundamental change)
+
+Upstream used Binance **US** spot endpoints plus a Yahoo Finance fallback, which
+left Asian pairs with almost no usable data.
+
+Same 4H candle, SUIUSDT:
+
+| Source | Volume |
 |---|---|
-| Multi-TF cascade with confluence card | Candlesticks + OB/FVG/session overlays |
+| Binance US (upstream) | 24,925 |
+| Binance global perpetual (this project) | 54,594,665 |
 
----
+A **2,190×** difference. After switching to the global `fapi.binance.com`
+endpoints, SUIUSDT went from "no data" to 499 complete candles.
 
-## Demo
+A real defect was fixed at the same time: the original `getCandles()` also
+returned the **still-forming candle**, so 18 call sites were classifying on an
+incomplete bar. It now returns closed candles only.
 
-Run locally (see Installation below) then visit `http://localhost:5173`.
+### 2. Liquidity state machine
 
-- Select **CRYPTO** → **BTC/USDT** → **INTRADAY**
-- View the cascade: H4 sets direction, H1 confirms, M15 triggers
-- Tap any card → **Intelligence Sheet** for deep analysis
-- Tap **CHART** for the visual chart with SMC overlays
-- Tap **SMT** on any card → AI agent pipeline fires
-- Visit `/broker` for the broker dashboard — account balance, open orders, LIVE/REVIEW mode switch
-- Visit `/analytics` for trade ledger, performance matrix, and signal generation
+Upstream had a boolean `wasSwept` and compared floats exactly
+(`close > pool.price`). This project defines seven states with an ATR tolerance:
 
----
-
-## Architecture Overview
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                    React Frontend                         │
-│  Dashboard → ConfluenceCard → IntelligenceSheet          │
-│             ChartView (Lightweight Charts v5)             │
-│             AgentChat + AgentPipeline (SSE)              │
-│             useRealtimeStream (SSE live prices + candles) │
-└──────────────────────┬───────────────────────────────────┘
-                       │ HTTP REST + SSE (dual channel)
-┌──────────────────────▼───────────────────────────────────┐
-│                Express 5 API Server                       │
-│  /api/analysis/crypto|forex    /api/agents/ask|pipeline  │
-│  /api/stream/:symbol (SSE)     /api/stream/status        │
-│  /api/broker/mode|status       /api/account              │
-│  /api/ledger                   /api/signals/*            │
-│  60s in-memory TTL cache                                 │
-│  ┌──────────────────────────────────────────────────┐    │
-│  │ Real-Time Pipeline                               │    │
-│  │  binance-ws.ts → candle-store → sse-manager      │    │
-│  │  forex-ws.ts   →     ↓          → analysis-bridge│    │
-│  │                → candleClosed  → buildReport     │    │
-│  │                                 → cache + SSE push│    │
-│  ├──────────────────────────────────────────────────┤    │
-│  │ Execution Layer                                   │    │
-│  │  ExecutionManager → MockBrokerAdapter (file)      │    │
-│  │                   → AlpacaAdapter (paper API)     │    │
-│  │  SignalGenerator → TradeLedgerService (PG)        │    │
-│  └──────────────────────────────────────────────────┘    │
-└──────┬──────────────────────────────┬────────────────────┘
-       │                              │
-┌──────▼──────────┐  ┌────────────────▼────────────┐
-│  Binance US WS  │  │  Finnhub WS / Yahoo poll    │
-│  + REST API     │  │  + REST API                 │
-│  (Crypto)       │  │  (Forex)                    │
-└─────────────────┘  └─────────────────────────────┘
-```
-
----
-
-## Technology Stack
-
-### Backend
-| Layer | Technology |
+| State | Meaning |
 |---|---|
-| Runtime | Node.js 20 + TypeScript 5 |
-| Framework | Express 5 |
-| Logger | Pino (JSON structured logging) |
-| Data (Crypto) | Binance REST + WebSocket (no key required) |
-| Data (Forex) | Yahoo Finance REST + Finnhub WebSocket (optional) |
-| AI | Fireworks AI — DeepSeek V4 Pro (SSE streaming) + multi-provider abstraction (AMD/vLLM, OpenAI, custom) |
-| MCP | FastMCP v4.3.2 on port 3002 — 11 tools, 2 resources, 1 prompt |
-| Execution | BrokerAdapter interface — MockBroker (file-based) + AlpacaAdapter (paper API) |
-| Database | PostgreSQL via Drizzle ORM (optional — server runs without it) |
-| Cache | In-process Map, 60s TTL |
+| `ACTIVE` | Not yet touched |
+| `APPROACHING` | Getting close (early notice only) |
+| `TOUCHED` | Reached, but unconfirmed |
+| `SWEPT` | Traded through the level, but the **completed** candle closed back on the original side |
+| `BROKEN` | Traded through the level and the **completed** candle closed beyond it |
+| `INVALIDATED` | No longer valid |
+| `PENDING_CONFIRMATION` | Temporary state while the candle is still forming |
 
-### Frontend
-| Layer | Technology |
+Three governing rules:
+
+- **Only completed candles may finalise a state.** Forming candles never do.
+- **Timeframe consistency.** A 4H level is judged on completed 4H candles;
+  lower timeframes may not override the higher-timeframe verdict.
+- **Tolerance, not exact comparison.** Tolerance is `ATR × 0.10`, chosen by
+  measuring real data (BTC's 4H ATR is ~1.10% of price, SUI's ~2.70% — a fixed
+  percentage cannot work for both).
+
+### 3. Dynamic universe
+
+No hard-coded list. Thresholds are calibrated against the observed distribution
+across all 528 global USDT perpetuals:
+
+| Filter | Threshold | Market median |
+|---|---|---|
+| 24h notional volume | ≥ $30M | $3.8M |
+| Open interest | ≥ $5M | $3.4M |
+| Bid/ask spread | ≤ 10 bps | 4.46 bps |
+| 7-day median volume | ≥ $20M | — |
+
+Result: **528 → 58 eligible → top 50 selected.**
+
+**Hysteresis** prevents churn: a symbol enters at top 50 and is only removed
+once it falls outside top 70; existing members are protected. Two consecutive
+refreshes produced `added=0 removed=0`.
+
+### 4. Event de-duplication (three layers)
+
+| Layer | Mechanism | Effect |
+|---|---|---|
+| Identity | Two-level key (event + liquidity) | `APPROACHING → SWEPT` is the same event, not a new one |
+| Time | 60-minute cooldown, 24-hour dedup window | One symbol does not nag more than once per window |
+| Display | Cross-timeframe collapse | The same price on 1H and 4H becomes one alert, not two |
+
+### 5. Persistent memory
+
+Upstream recomputed everything from the current window on each run, so it had
+**no memory** — a level that had already been consumed would be re-reported as
+a fresh target indefinitely.
+
+This project uses Node's built-in `node:sqlite` (no native dependency) to track
+each level's lifecycle:
+
+- A price region (0.2% tolerance) already handled **within the past week**
+  is not reported again
+- History older than a week is treated as stale (crypto structure turns over
+  on roughly a weekly cycle)
+- The ledger survives process restarts
+
+### 6. On-demand query interface
+
+**Design premise: the system never pushes unsolicited alerts.** It scans only
+when asked, and replies to that one request.
+
+| Command | Effect |
 |---|---|
-| Framework | React 18 + TypeScript |
-| Build | Vite |
-| Styling | Tailwind CSS + shadcn/ui |
-| Data Fetching | TanStack Query v5 |
-| Charts | TradingView Lightweight Charts v5 |
-| Animations | Framer Motion |
-| Router | Wouter |
+| `/scan` | Scan the whole tracked universe |
+| `/scan TRXUSDT` | Scan one symbol |
+| `/scan TRXUSDT 1h` | Scan one symbol on one timeframe |
+| `/events` | Show what is live now (no re-scan) |
+| `/status` | System state and configuration |
+| `/help` | Command list |
 
-### Monorepo
-| Package | Purpose |
-|---|---|
-| `artifacts/api-server` | Backend Express server |
-| `artifacts/liquidity-hunter` | Frontend React SPA |
-| `lib/api-client-react` | TanStack Query hooks (manually maintained) |
-| `lib/api-spec` | OpenAPI 3.1 spec |
-| `lib/api-zod` | Zod schemas |
-| `lib/db` | Drizzle ORM — trades + performance matrix tables |
-| `deploy/amd-developer-cloud` | AMD MI300X deployment (Docker Compose + vLLM + Gemma 4) |
+The bot answers the authorised chat only. Any other source is ignored, and
+plain text never triggers a scan.
 
 ---
 
-## AI Pipeline Overview
+## Quick start
 
-```
-User taps "SMT" button
-        ↓
-POST /api/agents/pipeline { report: SmcReport }
-        ↓
-System prompt built from live SmcReport data
-(price, structure, liquidity map, OBs, FVGs, SMT, draw targets)
-        ↓
-Sequential agent loop (SSE streaming):
-  1. Structure Agent   → market structure narrative
-  2. Liquidity Agent   → BSL/SSL hunt probability
-  3. FVG Agent         → rebalance vs continuation gaps
-  4. Confluence Agent  → final synthesis + invalidation level
-        ↓
-Frontend streams each agent token-by-token into AgentPipeline panel
-```
+### Requirements
 
-Also supports: `POST /api/agents/ask` — single-turn Q&A with full report context and conversation history (last 8 turns).
+- Node.js 25+ (uses the built-in `node:sqlite`)
+- pnpm
 
----
-
-## ICT/SMC Concepts Implemented
-
-- Market Structure (Pivots: HH / HL / LH / LL)
-- Break of Structure (BOS)
-- Change of Character (CHoCH / MSS)
-- Market Phase: Accumulation → Manipulation → Expansion → Distribution → Continuation
-- Buy-Side Liquidity (BSL) — Equal Highs, prior session highs
-- Sell-Side Liquidity (SSL) — Equal Lows, prior session lows
-- Probability of Sweep scoring per liquidity pool
-- Order Blocks (Bullish / Bearish)
-- Breaker Blocks (mitigated OBs that flip polarity)
-- Fair Value Gaps (FVG)
-- Inversion FVG
-- Premium / Discount / Equilibrium (PD Array)
-- Dealing Range
-- Daily Bias (HTF anchor)
-- SMT Divergence (correlated pair)
-- Draw on Liquidity (DOL) — scored target engine
-- Session analysis: Asian Range / London / NY AM / NY PM / PM Distribution
-- KZO (Key Zone — OB proximal line)
-
----
-
-## Project Structure
-
-```
-workspace/
-├── artifacts/
-│   ├── api-server/              # Express backend
-│   │   └── src/
-│   │       ├── lib/
-│   │       │   ├── smc/         # ICT engine (core algorithms)
-│   │       │   │   ├── config.ts
-│   │       │   │   ├── types.ts
-│   │       │   │   ├── structure.ts
-│   │       │   │   ├── structure.test.ts
-│   │       │   │   ├── liquidity.ts
-│   │       │   │   ├── liquidity.test.ts
-│   │       │   │   ├── order-blocks.ts
-│   │       │   │   ├── order-blocks.test.ts
-│   │       │   │   ├── fvg.ts
-│   │       │   │   ├── fvg.test.ts
-│   │       │   │   ├── pd-array.ts
-│   │       │   │   ├── pd-array.test.ts
-│   │       │   │   ├── daily-bias.ts
-│   │       │   │   ├── daily-bias.test.ts
-│   │       │   │   ├── smt.ts
-│   │       │   │   ├── smt.test.ts
-│   │       │   │   └── report.ts
-│   │       │   ├── fetchers/    # Market data
-│   │       │   │   ├── binance.ts
-│   │       │   │   └── yahoo.ts
-│   │       │   └── realtime/    # Real-time infrastructure
-│   │       │       ├── binance-ws.ts
-│   │       │       ├── forex-ws.ts
-│   │       │       ├── candle-store.ts
-│   │       │       ├── sse-manager.ts
-│   │       │       └── analysis-bridge.ts
-│   │       │   ├── execution/     # Broker execution layer
-│   │       │   │   ├── BrokerAbstraction.ts
-│   │       │   │   └── AlpacaAdapter.ts
-│   │       │   └── mcp/           # MCP server (FastMCP v4.3)
-│   │       └── routes/          # API endpoints
-│   │           ├── analysis.ts
-│   │           ├── agents.ts
-│   │           ├── agents-mcp.ts
-│   │           ├── stream.ts
-│   │           ├── ledger.ts     # Trading + broker
-│   │           ├── symbols.ts
-│   │           └── health.ts
-│   └── liquidity-hunter/        # React frontend
-│       └── src/
-│           ├── pages/
-│           │   ├── dashboard.tsx
-│           │   ├── Analytics.tsx
-│           │   └── Broker.tsx
-│           └── components/
-│               ├── IntelligenceSheet.tsx
-│               ├── ConfluenceCard.tsx
-│               ├── ConfluenceSheet.tsx
-│               ├── ChartView.tsx
-│               ├── AgentChat.tsx
-│               ├── AgentPipeline.tsx
-│               ├── TradeLedgerDashboard.tsx
-│               └── SignalDetailSheet.tsx
-├── lib/
-│   ├── api-spec/                # OpenAPI 3.1 definition
-│   ├── api-client-react/        # TanStack Query hooks
-│   └── api-zod/                 # Zod schemas
-└── pnpm-workspace.yaml
-```
-
----
-
-## Installation
-
-### Prerequisites
-- Node.js ≥ 20
-- pnpm ≥ 9
+### Install
 
 ```bash
-git clone <repo-url>
-cd workspace
+git clone <this-repo>
+cd smc_monitor/upstream
 pnpm install
 ```
 
----
+### Configure
 
-## Environment Variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `FIREWORKS_API_KEY` | Yes | Fireworks AI key for the analyst agent. Get one free at https://fireworks.ai |
-| `FINNHUB_API_KEY` | No | Finnhub API key for forex real-time WebSocket. Without it, Yahoo polling is used as fallback (free, no key). Get one free at https://finnhub.io |
-| `ALPACA_API_KEY_ID` | No | Alpaca Paper Trading API key ID. Set both this and the secret to enable live paper-trading execution through AlpacaAdapter. Without them, the server uses MockBrokerAdapter (file-based, no real orders) |
-| `ALPACA_API_SECRET_KEY` | No | Alpaca Paper Trading API secret key |
-| `DATABASE_URL` | No | PostgreSQL connection string for persistent trade ledger + performance matrix. Server runs without it (ledger and matrix endpoints return empty) |
-
-Set via your platform's secrets manager or `.env` at the repo root.
-
----
-
-## Running Locally
+Copy `.env.example` to `.env`:
 
 ```bash
-# Start API server (port 3001 by default)
-pnpm --filter @workspace/api-server run dev
-
-# Start frontend (port 5173 by default)
-pnpm --filter @workspace/liquidity-hunter run dev
+TELEGRAM_BOT_TOKEN=<your bot token>
+TELEGRAM_CHAT_ID=<your chat id>
 ```
 
-Then open `http://localhost:5173`.
+All tunables live in `config.yaml` (timeframes, thresholds, cooldowns,
+tolerances) — no code changes required.
 
----
-
-## Example API Request
+### Run
 
 ```bash
-# Crypto analysis — BTC/USDT 4h with ETH/USDT correlation
-curl "http://localhost:3001/api/analysis/crypto?symbol=BTCUSDT&timeframe=4h&correlatedSymbol=ETHUSDT"
+# Start the on-demand bot
+npx tsx artifacts/api-server/src/scripts/telegram-bot.ts
 
-# Forex analysis — EUR/USD 1h
-curl "http://localhost:3001/api/analysis/forex?symbol=EURUSD=X&timeframe=1h"
+# Manual scan (dry run, prints only)
+npx tsx artifacts/api-server/src/scripts/live-snapshot.ts
 
-# Real-time stream — BTC/USDT 1m candles (SSE)
-curl -N "http://localhost:3001/api/stream/BTCUSDT?timeframes=1m,5m,15m"
+# Manual scan and send
+npx tsx artifacts/api-server/src/scripts/live-snapshot.ts --send
 
-# Stream status — active symbols and candle counts
-curl "http://localhost:3001/api/stream/status"
+# Single symbol
+npx tsx artifacts/api-server/src/scripts/live-snapshot.ts --symbols TRXUSDT --timeframe 1h
 ```
 
----
+### Tests
 
-## Example API Response (abbreviated)
-
-```json
-{
-  "symbol": "BTCUSDT",
-  "market": "crypto",
-  "timeframe": "4h",
-  "currentPrice": 59740.37,
-  "narrative": "Daily bearish. BOS bearish confirmed. Price in premium zone. Nearest objective: SSL at 59,094.",
-  "sessionState": "Asian Range Formation",
-  "structure": {
-    "bias": "bearish",
-    "phase": "expansion",
-    "confidence": 0.72,
-    "evidence": ["2 BOS bearish", "CHoCH at 61,200"]
-  },
-  "liquidity": {
-    "nearestBSL": { "price": 65549.94, "probabilityOfSweep": 0.34 },
-    "nearestSSL": { "price": 59093.99, "probabilityOfSweep": 0.71 }
-  },
-  "orderBlocks": [
-    {
-      "type": "bearish", "proximal": 61400, "distal": 60800,
-      "confidence": 0.81, "confidenceFactors": ["✓ HTF bias aligned", "✓ FVG confluence"],
-      "isMitigated": false, "isBreaker": false
-    }
-  ],
-  "draw": [
-    { "type": "SSL", "price": 59093.99, "score": 1.42, "direction": "short",
-      "evidence": ["✓ SSL @ 59,094", "Prob sweep: 71%", "✓ HTF bias aligned"] }
-  ]
-}
-```
-
----
-
-## Roadmap
-
-- [x] WebSocket live price feed (Binance US for crypto, Finnhub/Yahoo for forex)
-- [x] Real-time candle-close SMC report rebuild with SSE push to browser
-- [x] AI agent system — streaming Q&A + 4-agent pipeline + MCP tool-calling
-- [x] MCP Tier 3 server — 11 SMC tools, 2 resources, 1 prompt for external AI agents
-- [x] Broker abstraction — MockBroker + AlpacaAdapter with REVIEW/LIVE mode toggle
-- [x] Broker dashboard — `/broker` page with account overview, orders, mode switch
-- [x] Backtesting — sliding-window backtest runner using real SMC engine
-- [x] Trade journal — PostgreSQL-backed ledger + performance matrix per setup
-- [x] Docker + CI — multi-stage Dockerfile, AMD MI300X docker-compose, GitHub Actions
-- [x] TypeScript — zero errors across both packages
-- [x] End-to-end MI300X deployment — run on real AMD Developer Cloud hardware
-- [ ] Price alert notifications when price enters OB zone or sweeps liquidity
-- [ ] Multi-panel chart view (two TFs side-by-side)
-- [ ] Candle tap to inspect — SMC context tooltip for selected bar
-- [ ] Mobile-native app (Expo React Native)
-- [ ] Public API with rate limiting
-
----
-
-## Testing
-
-The SMC engine has a comprehensive test suite — **302 tests across 7 modules, 0 failures**.
+486 tests pass (185 added by this project + 302 upstream engine tests):
 
 ```bash
-# Run all SMC tests
-npx tsx artifacts/api-server/src/lib/smc/fvg.test.ts
-npx tsx artifacts/api-server/src/lib/smc/structure.test.ts
-npx tsx artifacts/api-server/src/lib/smc/liquidity.test.ts
-npx tsx artifacts/api-server/src/lib/smc/order-blocks.test.ts
-npx tsx artifacts/api-server/src/lib/smc/daily-bias.test.ts
-npx tsx artifacts/api-server/src/lib/smc/pd-array.test.ts
-npx tsx artifacts/api-server/src/lib/smc/smt.test.ts
+npx tsx artifacts/api-server/src/lib/smc/liquidity-interaction.test.ts   # 31
+npx tsx artifacts/api-server/src/lib/events/deduplicator.test.ts          # 26
+npx tsx artifacts/api-server/src/lib/notify/formatters.test.ts            # 84
+npx tsx artifacts/api-server/src/lib/persistence/liquidity-store.test.ts  # 43
+npx tsx artifacts/api-server/src/scripts/telegram-bot.test.ts             # 14
+# plus the 7 upstream engine modules (302)
 ```
 
-| Module | Tests | Coverage |
-|---|---|---|
-| `fvg.test.ts` | 28 | Bullish/bearish FVG, volume spikes, doji rejection, forex, fill tracking, inversion |
-| `structure.test.ts` | 67 | Uptrend/downtrend bias, ranging, pivots (HH/HL/LH/LL), CHoCH/BOS reversal, confidence, phase, narratives |
-| `liquidity.test.ts` | 19 | BSL/SSL pools, swept/unswept, probability scoring, nearest pool, session assignment |
-| `order-blocks.test.ts` | 100 | Bullish/bearish OB, FVG confluence, mitigation, breaker blocks, confidence, strength |
-| `daily-bias.test.ts` | 29 | HH/HL structure, LH/LL structure, SMA confirmation, strength tiers, empty/short data |
-| `pd-array.test.ts` | 39 | Premium/discount/equilibrium bias, zone geometry, dealing range, labels |
-| `smt.test.ts` | 20 | Bearish/bullish SMT, no-divergence sync, confidence bounds, timing proximity |
+---
 
-## Contributing
+## Configuration
 
-Pull requests welcome. The codebase is deliberately modular — each SMC concept lives in its own file under `artifacts/api-server/src/lib/smc/`. To add a new concept:
+```yaml
+timeframes: [1h, 4h]              # Analysis timeframes
 
-1. Create `artifacts/api-server/src/lib/smc/your-concept.ts`
-2. Export a typed result interface from `types.ts`
-3. Call your analyser in `report.ts → buildReport()`
-4. Extend `SmcReport` in `types.ts` and mirror the new field in `lib/api-client-react/src/generated/api.schemas.ts`
+universe:
+  min_volume_24h_usd: 30000000    # 24h notional volume floor
+  min_open_interest_usd: 5000000  # Open interest floor
+  max_spread_bps: 10              # Spread ceiling
+  active_size: 50                 # Tracked symbols
+  removal_rank: 70                # Hysteresis: drop out only below this rank
+
+liquidity:
+  atr_tolerance_multiplier: 0.10  # ATR tolerance multiplier
+  approach_threshold_pct: 0.5     # "Approaching" distance
+  region_tolerance_pct: 0.2       # Same-region tolerance
+  region_lookback_days: 7         # How far back "already handled" counts
+
+alert_thresholds:
+  cooldown_minutes: 60            # Per-symbol cooldown
+  dedup_window_hours: 24          # Dedup window
+```
+
+---
+
+## Known limitations (stated honestly)
+
+| Limitation | Detail |
+|---|---|
+| **No manual TradingView cross-check yet** | Engine output is covered by 302 unit tests plus real-data validation, but has not been checked line-by-line against manually marked charts |
+| Web dashboard left untouched | Unmodified and unverified; not used by this project. Its WebSocket streaming path is likewise out of scope |
+| No scheduler by design | Passive query only — it does not push alerts on its own |
+| No AI analysis integration | Upstream's AI agent features are out of scope |
+
+## Non-Goals
+
+This project deliberately does **none** of the following:
+
+- Auto trading / automatic entry / automatic exit
+- Entry signals, stop loss, take profit, position sizing
+- Portfolio management
+- Exchange account integration (**no API key or secret required**)
+
+It runs fully without a Binance account, using public market data endpoints only.
 
 ---
 
 ## License
 
-MIT
+MIT, same as upstream. The original copyright notice is preserved in `LICENSE`.
 
----
-
-## Credits
-
-- **ICT (Inner Circle Trader)** — trading methodology and concept definitions
-- **TradingView** — Lightweight Charts v5 library
-- **Fireworks AI** — LLM inference infrastructure
-- **Binance** — crypto OHLCV data
-- **Yahoo Finance** — forex OHLCV data
+Upstream: [`GdotAiM/SMC-Liquidity-Hunter`](https://github.com/GdotAiM/SMC-Liquidity-Hunter)
