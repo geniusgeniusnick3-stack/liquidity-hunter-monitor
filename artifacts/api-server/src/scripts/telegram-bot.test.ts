@@ -27,6 +27,8 @@ ok(scanOf("/scan BTCUSDT 1h")?.timeframe === "1h", "/scan 幣種 時框 → 指�
 ok(scanOf("/scan@outsidetest_bot BTCUSDT")?.symbol === "BTCUSDT", "群組訊息帶 @bot 後綴仍可解析");
 ok(parseCommand("/events").kind === "events", "/events → 看現況");
 ok(parseCommand("/status").kind === "status", "/status → 系統狀態");
+ok(parseCommand("/mode").kind === "mode", "/mode → 監控模式");
+ok(parseCommand("/mode@outsidetest_bot").kind === "mode", "/mode 帶 @bot 後綴仍可解析");
 ok(parseCommand("/help").kind === "help", "/help → 說明");
 ok(parseCommand("/start").kind === "help", "/start → 說明");
 

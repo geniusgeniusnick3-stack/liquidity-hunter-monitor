@@ -149,6 +149,9 @@ async function handle(parsed: Command): Promise<void> {
     case "status":
       await reply(await buildStatus());
       break;
+    case "mode":
+      await reply(await buildModeReport());
+      break;
     case "scan": {
       const args = ["--send"];
       if (parsed.req?.symbol) args.push("--symbols", parsed.req.symbol);
@@ -170,6 +173,28 @@ async function handle(parsed: Command): Promise<void> {
  * The scanner already prints a human-readable summary — we capture stdout and
  * forward it rather than duplicating the logic here.
  */
+async function buildModeReport(): Promise<string> {
+  const { loadConfig } = await import(resolve(ROOT, "artifacts/api-server/src/lib/config/index.js"));
+  const cfg = loadConfig();
+  const mode = cfg.monitoring.mode;
+
+  const explanation = mode === "active"
+    ? "背景持續監控中，有新事件會主動通知。"
+    : "只在你下指令時掃描，不會主動通知。";
+
+  return [
+    `Monitoring Mode: ${mode.toUpperCase()}`,
+    "",
+    explanation,
+    "",
+    `分析時框：${cfg.timeframes.map((t: string) => t.toUpperCase()).join("、")}`,
+    `通知語言：${cfg.notifications.language}`,
+    "",
+    "要切換模式：修改 config.yaml 的 monitoring.mode，或設定環境變數",
+    "MONITORING_MODE=active / passive，然後重啟服務。",
+  ].join("\n");
+}
+
 async function buildStatus(): Promise<string> {
   const { getLiquidityStore } = await import(
     resolve(ROOT, "artifacts/api-server/src/lib/persistence/LiquidityStore.js")

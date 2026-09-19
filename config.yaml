@@ -6,11 +6,58 @@
 # trading USDT perpetuals. See the comment on each value for the measured
 # distribution it was derived from.
 #
-# Symbols below market floors are excluded; the survivors are then RANKED and
-# only the top `active_size` become the active watchlist (REQUIREMENTS §7).
+# Universe membership is determined by market-quality floors alone. There is no
+# fixed Top-N cap: whatever passes the floors is monitored, so 38 eligible means
+# 38 symbols and 61 means 61. See monitoring.mode below for how often the
+# resulting universe is actually scanned.
+
+# ── Monitoring mode ─────────────────────────────────────────────────────────
+#
+# PASSIVE (default) — "Tell me when I ask."
+#   The system does nothing until a user asks. It never scans the universe on a
+#   timer, never sends unsolicited alerts, and consumes no exchange bandwidth
+#   while idle. This remains the default installation behaviour.
+#
+# ACTIVE — "Monitor for me and tell me when something happens."
+#   Enables a background monitor over the SAME eligible universe, producing
+#   proactive alerts on liquidity state transitions.
+#
+# Both modes run the SAME SMC engine, the SAME persistence, and the SAME event
+# classification. The only difference is what triggers an analysis and whether
+# proactive alerts are allowed. Continuous monitoring is never enabled silently:
+# it requires this setting to be changed to `active`.
+#
+# Override without editing this file: MONITORING_MODE=active
+monitoring:
+  mode: passive
+
+  # ACTIVE only. How often the background monitor wakes to look for completed
+  # candles. This is a poll granularity, NOT a per-symbol download interval —
+  # a symbol is only re-analysed when one of its timeframes has actually closed.
+  active_poll_seconds: 60
+
+  # ACTIVE only. How many symbols to examine per tick, spreading the work so a
+  # large universe stays well inside exchange rate limits instead of firing
+  # hundreds of requests at once.
+  active_batch_size: 12
+
+# ── Alert language ──────────────────────────────────────────────────────────
+#
+# Which language alert messages are written in. ICT abbreviations (BSL, SSL,
+# SWEPT, BROKEN) stay in English in every language so they match TradingView and
+# course material.
+#
+#   zh-TW  Traditional Chinese (default)
+#   zh-CN  Simplified Chinese
+#   en     English
+#
+# Override without editing this file: NOTIFICATION_LANGUAGE=zh-CN
+notifications:
+  language: zh-TW
 
 universe:
-  # How often the universe is recomputed.
+  # How often the universe is recomputed. Kept separate from the ACTIVE-mode
+  # market poll cadence — membership changes slowly, price does not.
   refresh_hours: 6
 
   # Core symbols are always monitored and are never removed for a temporary
@@ -22,14 +69,14 @@ universe:
     - BNBUSDT
     - XRPUSDT
 
-  # Target size of the active watchlist (configurable; 30–100 per §7).
-  active_size: 50
-
-  # Hysteresis (REQUIREMENTS §8): a symbol must reach `entry_rank` to join,
-  # but is only dropped once it falls past `removal_rank`. This stops
-  # rank-49 → 52 → 48 churn from causing add/remove thrash.
-  entry_rank: 50
-  removal_rank: 70
+  # Exit hysteresis, expressed as a threshold gap rather than a rank position.
+  # A symbol that already qualified is only dropped once its metrics fall below
+  # this fraction of the entry floors (e.g. volume beneath 0.85 x 30M = 25.5M).
+  #
+  # This replaces the previous entry_rank/removal_rank pair, which required a
+  # fixed Top-N universe and therefore had to be removed. The anti-churn buffer
+  # is the same idea, just anchored to the floors instead of to rank order.
+  exit_threshold_factor: 0.85
 
   filters:
     # Measured: P50 = 3.8M, P75 = 12.8M, P90 = 66.6M. 30M admits ~86 symbols

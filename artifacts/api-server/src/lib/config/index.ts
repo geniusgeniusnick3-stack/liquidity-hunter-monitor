@@ -14,6 +14,7 @@ import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { logger } from "../logger.js";
+import { normaliseLanguage } from "../notify/i18n.js";
 
 // ── Schema ──────────────────────────────────────────────────────────────────
 
@@ -25,13 +26,23 @@ const UniverseFiltersSchema = z.object({
   min_listing_age_days: z.number().nonnegative(),
 });
 
+const MonitoringModeSchema = z.enum(["passive", "active"]);
+
 const ConfigSchema = z.object({
+  monitoring: z.object({
+    mode: MonitoringModeSchema,
+    active_poll_seconds: z.number().positive(),
+    active_batch_size: z.number().int().positive(),
+  }),
+  notifications: z.object({
+    language: z.enum(["zh-TW", "zh-CN", "en"]),
+  }),
   universe: z.object({
     refresh_hours: z.number().positive(),
     core_symbols: z.array(z.string().min(3)),
-    active_size: z.number().int().positive(),
-    entry_rank: z.number().int().positive(),
-    removal_rank: z.number().int().positive(),
+    // Hysteresis by threshold gap, not by rank — the universe has no fixed
+    // size, so there is no rank position to anchor a buffer to.
+    exit_threshold_factor: z.number().positive().max(1),
     filters: UniverseFiltersSchema,
   }),
   timeframes: z.array(z.string()).min(1),
@@ -126,24 +137,69 @@ export function loadConfig(options?: { force?: boolean }): AppConfig {
 
   const cfg = result.data;
 
-  // Cross-field sanity checks that zod cannot express.
-  if (cfg.universe.removal_rank < cfg.universe.entry_rank) {
-    throw new Error(
-      `config.yaml: universe.removal_rank (${cfg.universe.removal_rank}) must be >= ` +
-      `universe.entry_rank (${cfg.universe.entry_rank}) — otherwise hysteresis is inverted ` +
-      `and the watchlist would thrash.`,
-    );
+  // ── Monitoring mode override ──────────────────────────────────────────────
+  //
+  // MONITORING_MODE lets a deployment pick a mode without editing config.yaml,
+  // which matters for containers where the file is mounted read-only. An invalid
+  // value is rejected loudly rather than defaulted: silently falling back to
+  // PASSIVE could leave an operator believing alerts are armed when they are
+  // not, and silently falling back to ACTIVE would start traffic they did not
+  // ask for.
+  const envMode = process.env.MONITORING_MODE?.trim().toLowerCase();
+  if (envMode) {
+    const parsedMode = MonitoringModeSchema.safeParse(envMode);
+    if (!parsedMode.success) {
+      throw new Error(
+        `MONITORING_MODE must be "passive" or "active", got "${process.env.MONITORING_MODE}". ` +
+        `Refusing to guess — an unknown mode would mean an unknown monitoring posture.`,
+      );
+    }
+    if (parsedMode.data !== cfg.monitoring.mode) {
+      logger.info(
+        { file: cfg.monitoring.mode, env: parsedMode.data },
+        "MONITORING_MODE overrides config.yaml monitoring.mode",
+      );
+    }
+    cfg.monitoring.mode = parsedMode.data;
   }
-  if (cfg.universe.entry_rank < cfg.universe.active_size) {
+
+  // ── Alert language override ──────────────────────────────────────────────
+  // Accepts the usual spellings (zh_Hant, tw, cn, en-US …) because users type
+  // what they think the tag is. An unrecognised value is rejected rather than
+  // silently defaulted, so nobody ends up reading a language they did not pick.
+  const envLang = process.env.NOTIFICATION_LANGUAGE?.trim();
+  if (envLang) {
+    const normalised = normaliseLanguage(envLang);
+    if (!normalised) {
+      throw new Error(
+        `NOTIFICATION_LANGUAGE "${envLang}" is not recognised. Use zh-TW, zh-CN or en ` +
+        `(aliases like zh_Hant / zh-Hans / en-US are also accepted).`,
+      );
+    }
+    if (normalised !== cfg.notifications.language) {
+      logger.info(
+        { file: cfg.notifications.language, env: normalised },
+        "NOTIFICATION_LANGUAGE overrides config.yaml notifications.language",
+      );
+    }
+    cfg.notifications.language = normalised;
+  }
+
+  if (cfg.monitoring.mode === "active") {
     logger.warn(
-      { entryRank: cfg.universe.entry_rank, activeSize: cfg.universe.active_size },
-      "universe.entry_rank is below active_size — the watchlist can never fill",
+      { pollSeconds: cfg.monitoring.active_poll_seconds, batchSize: cfg.monitoring.active_batch_size },
+      "ACTIVE monitoring mode enabled — proactive alerts will be sent",
     );
   }
 
   cached = cfg;
   logger.info(
-    { file, activeSize: cfg.universe.active_size, timeframes: cfg.timeframes },
+    {
+      file,
+      monitoringMode: cfg.monitoring.mode,
+      exitThresholdFactor: cfg.universe.exit_threshold_factor,
+      timeframes: cfg.timeframes,
+    },
     "Configuration loaded",
   );
   return cfg;

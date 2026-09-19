@@ -15,6 +15,7 @@ export type Command =
   | { kind: "scan"; req: ScanRequest }
   | { kind: "events" }
   | { kind: "status" }
+  | { kind: "mode" }
   | { kind: "help" }
   | { kind: "ignore" };
 
@@ -36,6 +37,12 @@ export function parseCommand(raw: string): Command {
       return { kind: "events" };
     case "/status":
       return { kind: "status" };
+    case "/mode":
+      // Read-only in V1: switching modes at runtime would mean starting or
+      // stopping a background monitor from inside a message handler, which is
+      // a lot of moving parts for the benefit. /mode reports; changing it is a
+      // config edit plus restart.
+      return { kind: "mode" };
     case "/help":
     case "/start":
       return { kind: "help" };
@@ -52,6 +59,11 @@ export const HELP = `【流動性獵人 — 指令】
 /scan BTCUSDT 1h — 只掃這個幣的這個時框
 /events — 看現在有什麼（不重新掃描）
 /status — 系統狀態
+/mode — 目前的監控模式
 /help — 這個說明
 
-系統只在你下指令時動作，不會主動通知。`;
+監控模式：
+  PASSIVE（預設）— 你下指令才動作，不會主動通知
+  ACTIVE — 背景持續監控，有新事件會主動通知
+
+ACTIVE 必須由使用者明確開啟（config.yaml 或環境變數），不會自動啟動。`;

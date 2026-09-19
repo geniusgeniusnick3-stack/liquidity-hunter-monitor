@@ -1,0 +1,367 @@
+/**
+ * Shared scan engine.
+ *
+ * ONE implementation of the pipeline both monitoring modes must use:
+ *
+ *   market data → dynamic universe → SMC engine → event classification → alerts
+ *
+ * PASSIVE and ACTIVE differ ONLY in what triggers a scan and whether the
+ * resulting alerts are pushed to the user. Neither mode owns any analysis
+ * logic: this module is the single place where liquidity events are derived,
+ * persisted, de-duplicated and rendered into alert text.
+ *
+ *   PASSIVE  → user command  → runScan() → reply to that command
+ *   ACTIVE   → timer          → runScan() → push proactive alerts
+ *
+ * If a change to market interpretation is ever needed, it belongs here (or in
+ * the SMC engine) and both modes inherit it automatically.
+ */
+import { loadConfig } from "../config/index.js";
+import { fetchKlines } from "../market/futures.js";
+import type { Candle } from "../smc/types.js";
+import { analyzeLiquidity } from "../smc/liquidity.js";
+import { formatApproaching, formatSweepGroup, type LiquiditySide } from "../notify/formatters.js";
+import { AlertDeduplicator, liquidityLevelId, type AlertIdentity } from "../events/Deduplicator.js";
+import { getLiquidityStore } from "../persistence/LiquidityStore.js";
+import type { Language } from "../notify/i18n.js";
+
+// ── Result shapes ───────────────────────────────────────────────────────────
+
+export interface ScanEvent {
+  symbol: string;
+  timeframe: string;
+  side: LiquiditySide;
+  state: "SWEPT" | "BROKEN";
+  /** Every level settled by the same candle — collapsed into one alert. */
+  levels: number[];
+  candleTime: number;
+  extreme: number;
+  close: number;
+}
+
+export interface ScanApproach {
+  symbol: string;
+  /** All timeframes where this price is a live level, highest first. */
+  timeframes: string[];
+  /** The highest timeframe — drives the message wording. */
+  primary: string;
+  side: LiquiditySide;
+  price: number;
+  currentPrice: number;
+  distancePct: number;
+  source: string;
+}
+
+export interface ScanHistorySkip {
+  symbol: string;
+  timeframe: string;
+  side: LiquiditySide;
+  price: number;
+  priorPrice: number;
+  priorState: string;
+  priorAt: number | null;
+}
+
+/** An alert that passed de-duplication and cooldown, ready to transmit. */
+export interface PendingAlert {
+  text: string;
+  identity: AlertIdentity;
+  label: string;
+}
+
+export interface ScanResult {
+  events: ScanEvent[];
+  approaches: ScanApproach[];
+  historySkipped: ScanHistorySkip[];
+  /** Alerts that survived dedup/cooldown and are safe to send. */
+  pending: PendingAlert[];
+  /** Alerts suppressed by dedup/cooldown, for logging. */
+  suppressed: Array<{ label: string; reason: string }>;
+  scanned: number;
+  failures: number;
+  latestCandleTime: number;
+  symbolCount: number;
+  eligibleCount: number;
+}
+
+export interface ScanOptions {
+  /** Restrict to specific symbols (user asked for one). Defaults to the universe. */
+  symbols?: string[];
+  /** Restrict to specific timeframes. Defaults to config.timeframes. */
+  timeframes?: string[];
+  /** Progress/log sink. PASSIVE prints it; ACTIVE logs it. */
+  onLog?: (message: string) => void;
+  /** Skip dedup entirely (debugging). */
+  bypassDedup?: boolean;
+  /**
+   * Where candles come from. Defaults to a direct fetch.
+   *
+   * ACTIVE mode injects a cache-backed loader so that polling more often than
+   * candles close costs nothing; PASSIVE mode leaves it alone because a manual
+   * query should always hit the exchange.
+   */
+  candleSource?: (symbol: string, timeframe: string, limit: number) => Promise<Candle[]>;
+}
+
+// ── Timeframe display order ─────────────────────────────────────────────────
+
+const TF_ORDER = ["1w", "1d", "4h", "1h", "30m", "15m", "5m", "1m"];
+
+// ── The scan ────────────────────────────────────────────────────────────────
+
+/**
+ * Run one full scan and return everything derived from it.
+ *
+ * Callers decide what to DO with the result — this function never sends
+ * anything itself, which is what keeps the two modes on identical analysis.
+ */
+export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
+  const log = options.onLog ?? (() => {});
+  const config = loadConfig();
+  const language: Language = config.notifications.language;
+
+  const timeframes = options.timeframes?.length ? options.timeframes : config.timeframes;
+  const approachPct = config.alert_thresholds.approaching_distance_pct;
+  const getCandles = options.candleSource ?? fetchKlines;
+
+  // ── Dedup + cooldown (§17, §18), persisted across runs ──
+  const store = getLiquidityStore();
+  const dedup = new AlertDeduplicator(
+    {
+      dedupWindowHours: config.alert_thresholds.dedup_window_hours,
+      cooldownMinutes: config.alert_thresholds.cooldown_minutes,
+    },
+    () => Date.now(),
+  );
+  const savedDedup = store.getState<ReturnType<AlertDeduplicator["exportState"]>>("dedup_state");
+  if (savedDedup && !options.bypassDedup) {
+    dedup.importState(savedDedup);
+    log(`已載入去重狀態：${dedup.getStats().trackedEvents} 筆事件、${dedup.getStats().trackedLevels} 個價位`);
+  }
+
+  // ── Which symbols? ──
+  let symbols: string[];
+  let eligibleCount = 0;
+  if (options.symbols?.length) {
+    symbols = options.symbols;
+    log(`使用指定幣種：${symbols.join(", ")}`);
+  } else {
+    const { universeManager } = await import("../universe/DynamicUniverseManager.js");
+    const snap = await universeManager.refresh();
+    symbols = snap.activeSymbols;
+    eligibleCount = snap.eligibleCount;
+    log(`監控清單：${symbols.length} 個幣（${snap.eligibleCount} 個通過流動性門檻）`);
+  }
+
+  const regionTolerancePct = config.liquidity.region_tolerance_pct;
+  const regionLookbackDays = config.liquidity.region_lookback_days;
+
+  const groupMap = new Map<string, ScanEvent>();
+  const approachingRaw: ScanApproach[] = [];
+  const historySkipped: ScanHistorySkip[] = [];
+  let scanned = 0;
+  let failures = 0;
+  let latestCandleTime = 0;
+
+  for (const symbol of symbols) {
+    for (const tf of timeframes) {
+      try {
+        const candles = await getCandles(symbol, tf, 500);
+        if (candles.length < config.scanner.min_candles_required) continue;
+
+        scanned++;
+        const lastClosed = candles[candles.length - 1];
+        latestCandleTime = Math.max(latestCandleTime, lastClosed.time);
+        const currentPrice = lastClosed.close;
+        const res = analyzeLiquidity(candles, tf, "crypto");
+
+        for (const pool of res.pools) {
+          const side: LiquiditySide = pool.type === "SSL" ? "SSL" : "BSL";
+          const levelId = liquidityLevelId(symbol, tf, side, pool.time, pool.price);
+
+          // Ledger write (§11): remember this level exists.
+          store.upsertLevel({
+            id: levelId,
+            symbol,
+            timeframe: tf,
+            side,
+            price: pool.price,
+            formedAt: pool.time,
+            session: pool.session,
+            source: `${pool.touches} 次觸及`,
+            touches: pool.touches,
+          });
+
+          // Persist the engine's verdict so it survives restarts.
+          if (pool.wasSwept && pool.interactionAt !== null && pool.interactionCandle) {
+            store.setState(
+              levelId,
+              pool.interaction === "BROKEN" ? "BROKEN" : "SWEPT",
+              {
+                sweptAt: pool.interaction === "SWEPT" ? pool.interactionAt * 1000 : undefined,
+                sweepExtreme: side === "BSL" ? pool.interactionCandle.high : pool.interactionCandle.low,
+                brokenAt: pool.interaction === "BROKEN" ? pool.interactionAt * 1000 : undefined,
+              },
+            );
+          }
+
+          // ── Same-area memory (§11) ──
+          // A rolling-window pivot has no history, so an area handled days ago
+          // can look brand new. Suppress the re-announcement.
+          if (!pool.wasSwept) {
+            const priorTaken = store.takenNear(
+              symbol, tf, side, pool.price, regionTolerancePct, regionLookbackDays,
+            );
+            if (priorTaken && priorTaken.id !== levelId) {
+              historySkipped.push({
+                symbol, timeframe: tf, side, price: pool.price,
+                priorPrice: priorTaken.price,
+                priorState: priorTaken.state,
+                priorAt: priorTaken.sweptAt ?? priorTaken.brokenAt ?? priorTaken.stateChangedAt,
+              });
+              continue;
+            }
+          }
+
+          // A genuine event: the interaction landed on the most recent
+          // COMPLETED candle. Earlier candles are history, not news.
+          const isEvent = pool.interactionAt === lastClosed.time
+            && (pool.interaction === "SWEPT" || pool.interaction === "BROKEN");
+
+          if (isEvent && pool.interactionCandle) {
+            const key = `${symbol}|${tf}|${side}|${pool.interaction}|${lastClosed.time}`;
+            const existing = groupMap.get(key);
+            if (existing) {
+              existing.levels.push(pool.price);
+            } else {
+              groupMap.set(key, {
+                symbol, timeframe: tf, side,
+                state: pool.interaction as "SWEPT" | "BROKEN",
+                candleTime: lastClosed.time,
+                levels: [pool.price],
+                extreme: side === "BSL" ? pool.interactionCandle.high : pool.interactionCandle.low,
+                close: pool.interactionCandle.close,
+              });
+            }
+            continue;
+          }
+
+          // Approaching and still untaken.
+          if (!pool.wasSwept) {
+            const distancePct = Math.abs(pool.price - currentPrice) / currentPrice * 100;
+            const onCorrectSide = side === "BSL" ? pool.price > currentPrice : pool.price < currentPrice;
+            if (onCorrectSide && distancePct <= approachPct) {
+              approachingRaw.push({
+                symbol, side, price: pool.price,
+                timeframes: [tf], primary: tf,
+                currentPrice, distancePct,
+                source: `${pool.touches} 次觸及｜${pool.session ?? "未知時段"}`,
+              });
+            }
+          }
+        }
+      } catch {
+        failures++;
+      }
+    }
+  }
+
+  // ── Cross-timeframe collapse: one price, one message ──
+  // The same level is often a pivot on several timeframes at once. To a human
+  // that is ONE observation, so report the highest timeframe and note the rest.
+  const approachMap = new Map<string, ScanApproach>();
+  for (const a of approachingRaw) {
+    const bucket = Math.round(Math.log(a.price) / Math.log(1.002)); // 0.2% buckets
+    const key = `${a.symbol}|${a.side}|${bucket}`;
+    const existing = approachMap.get(key);
+    if (existing) {
+      if (!existing.timeframes.includes(a.primary)) existing.timeframes.push(a.primary);
+      if (a.distancePct < existing.distancePct) {
+        existing.distancePct = a.distancePct;
+        existing.currentPrice = a.currentPrice;
+        existing.price = a.price;
+      }
+      continue;
+    }
+    approachMap.set(key, { ...a, timeframes: [a.primary] });
+  }
+
+  const approaches = [...approachMap.values()].map((a) => {
+    const sorted = [...a.timeframes].sort((x, y) => TF_ORDER.indexOf(x) - TF_ORDER.indexOf(y));
+    return { ...a, timeframes: sorted, primary: sorted[0] };
+  });
+
+  const events = [...groupMap.values()];
+
+  // ── Apply §17/§18 ──
+  const pending: PendingAlert[] = [];
+  const suppressed: Array<{ label: string; reason: string }> = [];
+
+  for (const g of events) {
+    const identity: AlertIdentity = {
+      symbol: g.symbol,
+      timeframe: g.timeframe,
+      eventType: `LIQUIDITY_${g.state}`,
+      levelId: `${g.side}|${g.levels.slice().sort((x, y) => x - y).join("+")}`,
+      state: g.state,
+    };
+    const decision = options.bypassDedup ? { send: true, reason: "bypass" as const } : dedup.shouldSend(identity);
+    const label = `${g.symbol} ${g.timeframe.toUpperCase()} ${g.side} ${g.state} ×${g.levels.length}`;
+    if (!decision.send) {
+      suppressed.push({ label, reason: decision.reason });
+      continue;
+    }
+    pending.push({
+      text: formatSweepGroup({
+        symbol: g.symbol, timeframe: g.timeframe, side: g.side, state: g.state,
+        levels: g.levels, extreme: g.extreme, close: g.close,
+      }, language),
+      identity,
+      label,
+    });
+  }
+
+  for (const a of approaches) {
+    const identity: AlertIdentity = {
+      symbol: a.symbol,
+      timeframe: a.primary,
+      eventType: "LIQUIDITY_APPROACHING",
+      levelId: `${a.side}|${a.price}|${[...a.timeframes].sort().join("+")}`,
+      state: "APPROACHING",
+    };
+    const decision = options.bypassDedup ? { send: true, reason: "bypass" as const } : dedup.shouldSend(identity);
+    const tfLabel = a.timeframes.map((t) => t.toUpperCase()).join("+");
+    const label = `${a.symbol} ${tfLabel} ${a.side} 接近 ${a.price}`;
+    if (!decision.send) {
+      suppressed.push({ label, reason: decision.reason });
+      continue;
+    }
+    const otherTfs = a.timeframes.filter((t) => t !== a.primary).map((t) => t.toUpperCase());
+    pending.push({
+      text: formatApproaching({
+        symbol: a.symbol, timeframe: a.primary, side: a.side, level: a.price,
+        currentPrice: a.currentPrice, distancePct: a.distancePct,
+        source: a.source + (otherTfs.length ? `｜亦出現於 ${otherTfs.join("、")}` : ""),
+      }, language),
+      identity,
+      label,
+    });
+  }
+
+  if (!options.bypassDedup) {
+    store.putState("dedup_state", dedup.exportState());
+  }
+
+  return {
+    events,
+    approaches,
+    historySkipped,
+    pending,
+    suppressed,
+    scanned,
+    failures,
+    latestCandleTime,
+    symbolCount: symbols.length,
+    eligibleCount,
+  };
+}
