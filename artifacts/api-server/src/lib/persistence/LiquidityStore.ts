@@ -265,6 +265,25 @@ export class LiquidityStore {
    * Note the absence of a time cut-off on `formed_at`: §11 requires an old but
    * still-valid swing high to keep being reported. Only levels explicitly
    * INVALIDATED are excluded.
+   *
+   * TWO THINGS TO KNOW BEFORE READING THIS AS "THE LIVE SET":
+   *
+   * 1. This is a record of last-known state, not a live verdict. A level that
+   *    the engine merely stops returning — because a newer pivot superseded it
+   *    within the rolling window, or because it fell outside the top-20 score
+   *    cut — stays ACTIVE here forever. Nothing in the pipeline ever writes
+   *    INVALIDATED; only SWEPT and BROKEN are set by ScanEngine.
+   *
+   * 2. Therefore do NOT feed these rows back into a scan as levels to report.
+   *    The engine is the authority on which pivots are live, and it re-derives
+   *    them from a window deep enough (~83 days on 4H) to cover every unresolved
+   *    level on record — verified against the live ledger, where zero
+   *    unresolved levels sit outside their timeframe's window. Restoring rows
+   *    here would not recover lost levels (there are none); it would resurrect
+   *    superseded ones, and this table cannot tell the two apart.
+   *
+   * Read this for history and for same-area suppression (see takenNear). Read
+   * the engine for what is live.
    */
   listLevels(symbol: string, timeframe: string, options?: { includeInvalidated?: boolean }): LiquidityLevel[] {
     const sql = options?.includeInvalidated

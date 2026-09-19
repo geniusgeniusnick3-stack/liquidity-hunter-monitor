@@ -174,6 +174,24 @@ export interface ScanOptions {
 
 const TF_ORDER = ["1w", "1d", "4h", "1h", "30m", "15m", "5m", "1m"];
 
+/**
+ * History depth per analysis, in candles.
+ *
+ * This number is load-bearing for liquidity lifetime, because there is no
+ * age-based expiry: a level is visible to a scan only while it sits inside this
+ * window, so the window IS the horizon. At 500 bars that is ~20.8 days on 1H
+ * and ~83 days on 4H — both comfortably past the seven-day figure that must
+ * never expire a level.
+ *
+ * Measured against the live ledger: of 591 unresolved levels on record, zero
+ * fall outside this window on their own timeframe. Nothing older is being lost.
+ *
+ * Shrinking it would silently shorten how far back unresolved liquidity can be
+ * found, so candle-depth.test.ts asserts the resulting spans in days rather
+ * than trusting this comment.
+ */
+export const SCAN_CANDLE_LIMIT = 500;
+
 // ── The scan ────────────────────────────────────────────────────────────────
 
 /**
@@ -269,7 +287,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
       if (i >= pairs.length) return;
       const { symbol, tf } = pairs[i];
       try {
-        const candles = await getCandles(symbol, tf, 500);
+        const candles = await getCandles(symbol, tf, SCAN_CANDLE_LIMIT);
         if (candles.length < config.scanner.min_candles_required) continue;
 
         scanned++;

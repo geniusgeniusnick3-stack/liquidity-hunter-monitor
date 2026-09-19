@@ -273,6 +273,51 @@ each level's lifecycle:
 - Event/dedup retention and liquidity-level validity are separate concerns
 - The ledger survives process restarts
 
+### 5b. History depth audit (measured, not assumed)
+
+Removing a seven-day expiry is only half the correction. A level is visible to a
+scan only while it sits inside the candle window, so **the window depth is the
+real horizon**:
+
+| Timeframe | Loaded per scan | Equivalent depth |
+|---|---|---|
+| 1H | 500 candles | 20.8 days |
+| 4H | 500 candles | 83.3 days |
+
+Checked against the live ledger (45 symbols x 1H/4H):
+
+| Measure | Result |
+|---|---|
+| Unresolved levels on record | 455 |
+| **Falling outside the candle window** | **0** |
+| Returned by the engine | 1,417 |
+
+The 28 levels the engine did not return, classified by cause:
+
+| Cause | Count | Verdict |
+|---|---|---|
+| Superseded by a more extreme pivot (existing structural invalidation) | 26 | ✅ correct |
+| Traded through but the event never reached the ledger | 0 | ✅ no missed events |
+| Valid, untouched, dropped by the engine's top-20 score cut | 2 | ⚠️ known limitation |
+
+Those two were 18 and 20 days old. The engine's score carries a recency decay
+(half-life 200 bars ≈ 8 days on 1H), so an old level loses a ranking contest and
+gets squeezed out. That is not a seven-day rule, but the effect rhymes with one —
+and it is flagged in the code rather than changed quietly.
+
+`candle-depth.test.ts` guards the depth: narrowing `SCAN_CANDLE_LIMIT` so it no
+longer spans seven days fails the suite.
+
+Reproduce:
+
+```bash
+# Compare ledger vs engine output per symbol, classified by cause
+npx tsx artifacts/api-server/src/scripts/measure-level-coverage.ts BTCUSDT,ETHUSDT 1h,4h
+
+# Ask why the engine omits one specific level
+npx tsx artifacts/api-server/src/scripts/explain-missing-level.ts BTCUSDT 1h 81181.8
+```
+
 ### 6. On-demand query interface
 
 **Design premise: the system never pushes unsolicited alerts.** It scans only

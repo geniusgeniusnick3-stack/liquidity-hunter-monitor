@@ -221,6 +221,20 @@ export function analyzeLiquidity(candles: Candle[], timeframe: string, market: s
     if (isLocalLow)  pools.push(buildPool(lo, "SSL"));
   }
 
+  // MEASURED CONSEQUENCE OF THIS CUT (2026-09-20, 45 symbols x 1H/4H):
+  // of 28 persisted-but-unreturned levels, 26 were legitimately superseded (a
+  // more extreme pivot formed nearby) and 0 were missed events — but 2 were
+  // valid, untouched, and simply outscored. Both were older than 7 days
+  // (18 and 20 days), because `score` carries a recency decay whose half-life
+  // is 200 bars (~8 days on 1H). Age therefore removes levels here, indirectly:
+  // not by any rule that says "too old", but by losing a ranking contest.
+  //
+  // Consumed levels also compete for these slots with a 1.5x displacement
+  // boost, so a taken level can occupy a slot a live one needed.
+  //
+  // Left as-is deliberately. Raising the cut, or selecting unresolved levels
+  // before capping, would change what the engine reports — that is a product
+  // decision, not a bug fix to make quietly inside detection code.
   const sortedByScore = [...pools].sort((a, b) => b.score - a.score);
   const topPools      = sortedByScore.slice(0, 20);
   const activePools   = topPools.filter(p => !p.wasSwept);
