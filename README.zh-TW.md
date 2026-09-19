@@ -1,4 +1,6 @@
-# Liquidity Hunter — 被動式 SMC 流動性監控
+# Liquidity Hunter — SMC 流動性監控
+
+> 預設為被動查詢模式；使用者亦可明確啟用主動監控模式。
 
 > **你問，它才掃**（要背景盯著，需自行開啟 ACTIVE 模式）。
 > 不做自動交易，不使用帳號 API。

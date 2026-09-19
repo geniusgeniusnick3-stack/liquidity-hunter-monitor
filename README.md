@@ -1,4 +1,6 @@
-# Liquidity Hunter — On-Demand SMC Liquidity Monitor
+# Liquidity Hunter — SMC Liquidity Monitor
+
+> Passive by default. Active monitoring is optional and explicitly user-enabled.
 
 > **It scans when you ask.** No auto-trading, no account APIs — and no unsolicited
 > push unless you turn on ACTIVE mode.
