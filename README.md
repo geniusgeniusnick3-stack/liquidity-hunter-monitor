@@ -1,10 +1,12 @@
 # Liquidity Hunter — On-Demand SMC Liquidity Monitor
 
-> **It scans when you ask.** No auto-trading, no unsolicited push, no account APIs.
+> **It scans when you ask.** No auto-trading, no account APIs — and no unsolicited
+> push unless you turn on ACTIVE mode.
 
 > ### 繁體中文說明 ｜ [完整中文版 README.zh-TW.md](README.zh-TW.md)
 >
-> 這是一套**被動式**的 SMC（Smart Money Concepts）流動性監控系統。
+> 這是一套**預設為被動式**的 SMC（Smart Money Concepts）流動性監控系統，
+> 也可選用背景主動監控。
 > 你在 Telegram 下指令（例如 `/scan BTCUSDT`），它才掃描 Binance USDT-M 永續市場，
 > 回報值得人工查看的價位事件。
 >
@@ -12,15 +14,15 @@
 > 最終的交易決策完全由使用者負責。
 >
 > - 不做自動交易、不下單、不管理部位
-> - 不主動推播（不是 24/7 一直吵你）
+> - 預設不主動推播（要主動推播需自行開啟 ACTIVE 模式）
 > - **不需要交易所帳號 API**（只用公開市場資料）
 > - 基於開源專案 GdotAiM/SMC-Liquidity-Hunter（MIT），保留其分析引擎
 
 An SMC (Smart Money Concepts) liquidity monitor for the Binance USDT-M perpetual
 market, built on top of the open-source
 [`GdotAiM/SMC-Liquidity-Hunter`](https://github.com/GdotAiM/SMC-Liquidity-Hunter).
-The upstream single-symbol web dashboard was reworked into an **on-demand
-market-wide scanner queried from Telegram**.
+The upstream single-symbol web dashboard was reworked into a **market-wide
+scanner queried from Telegram**, with an optional background monitoring mode.
 
 ---
 
@@ -28,7 +30,8 @@ market-wide scanner queried from Telegram**.
 
 It screens several hundred Binance USDT-M perpetual pairs, keeps the ones with
 enough liquidity, analyses their BSL / SSL liquidity with the SMC engine, and —
-**when you ask it to** — reports price events worth a human look.
+**when you ask it to, or on a candle close in ACTIVE mode** — reports price
+events worth a human look.
 
 **It describes how price interacted with a liquidity level. It does not predict direction.**
 
@@ -177,7 +180,7 @@ selection, event lifecycle, persistence and a query interface around it.
 | Symbol list | Hard-coded in source | Derived from liquidity metrics |
 | Liquidity state | `wasSwept: true / false` | Seven states + ATR tolerance |
 | Memory | None (recomputed each run) | SQLite ledger, survives restarts |
-| Alerts | None | Telegram (on demand) |
+| Alerts | None | Telegram — on-demand in PASSIVE mode, proactive state-transition alerts in ACTIVE mode |
 | Web dashboard | Yes | **Left as-is, unused by this project** |
 
 ---
@@ -240,6 +243,10 @@ across all 528 global USDT perpetuals:
 | 7-day median volume | ≥ $20M | — |
 
 Result: **528 → 58 eligible → all 58 included.**
+
+These thresholds are current calibration defaults based on observed Binance USDT-M
+market distributions. They are configurable and are not claimed to be universally
+optimal.
 
 There is no Top-50 or fixed Top-N cap. Ranking is retained for display and
 diagnostics only; it must never exclude a symbol that passes eligibility.
@@ -554,7 +561,7 @@ re-run them.
 |---|---|
 | TradingView cannot be diffed automatically | Its chart is canvas-rendered and loads data dynamically, so candles cannot be scraped. Replaced with two equivalent, stricter automated checks (below) |
 | Web dashboard left untouched | Unmodified and unverified; not used by this project. Its WebSocket streaming path is likewise out of scope |
-| No scheduler by design | Passive query only — it does not push alerts on its own |
+| Background monitoring is opt-in | PASSIVE is the default and runs no continuous scanning on its own. ACTIVE is optional: continuous monitoring and proactive alerts begin only when the user explicitly enables ACTIVE mode |
 | No AI analysis integration | Upstream's AI agent features are out of scope |
 
 ## Non-Goals
