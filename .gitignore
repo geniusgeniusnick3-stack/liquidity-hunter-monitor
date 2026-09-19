@@ -57,8 +57,10 @@ graphify-out/
 attached_assets/
 docs-backup/
 
-# Runtime data — local scan ledger, never publish
-data/
-*.db
-*.db-shm
-*.db-wal
+# Runtime data — THIS PROJECT's local scan ledger, never publish.
+# Scoped precisely rather than ignoring data/ wholesale, because upstream
+# tracks data/mock_broker/* as part of its broker demo and those files are
+# meant to ship with the repository.
+/data/liquidity.db
+/data/liquidity.db-shm
+/data/liquidity.db-wal
