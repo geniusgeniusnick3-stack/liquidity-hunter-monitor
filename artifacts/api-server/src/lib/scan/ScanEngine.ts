@@ -62,7 +62,12 @@ export interface ScanHistorySkip {
   priorAt: number | null;
 }
 
-/** An alert that passed de-duplication and cooldown, ready to transmit. */
+/**
+ * An alert ready to be delivered.
+ *
+ * When `applyDedup` is false (the passive-query case) this is every current
+ * finding, not only the ones that are new since last time.
+ */
 export interface PendingAlert {
   text: string;
   identity: AlertIdentity;
@@ -93,7 +98,22 @@ export interface ScanOptions {
   timeframes?: string[];
   /** Progress/log sink. PASSIVE prints it; ACTIVE logs it. */
   onLog?: (message: string) => void;
-  /** Skip dedup entirely (debugging). */
+  /**
+   * Apply de-duplication and cooldown to the resulting alerts.
+   *
+   * Only for PUSH delivery. De-duplication exists to stop the system from
+   * interrupting someone about the same event twice — that concern applies to a
+   * background monitor pushing alerts, and NOT to a person who just asked a
+   * question.
+   *
+   * A passive query is answered with the current state, full stop. "No new
+   * events" is the wrong answer to "what is happening right now?" when three
+   * levels are sitting there live, merely because they were reported earlier.
+   *
+   * Defaults to false: suppressing output must be opted into, never inherited.
+   */
+  applyDedup?: boolean;
+  /** Alias kept so existing debug callers keep working. */
   bypassDedup?: boolean;
   /**
    * Where candles come from. Defaults to a direct fetch.
@@ -149,8 +169,13 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
     },
     () => Date.now(),
   );
+  // Dedup is push-delivery machinery. A passive query does not consult it at
+  // all, so it neither suppresses output nor advances the stored state — asking
+  // a question must not change what the background monitor will report later.
+  const useDedup = options.applyDedup === true && options.bypassDedup !== true;
+
   const savedDedup = store.getState<ReturnType<AlertDeduplicator["exportState"]>>("dedup_state");
-  if (savedDedup && !options.bypassDedup) {
+  if (savedDedup && useDedup) {
     dedup.importState(savedDedup);
   }
 
@@ -169,7 +194,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
   // Internal progress notes. These go to the operator's log, not to the user —
   // the user-facing reply is built separately (see formatScanReply) so debug
   // detail never leaks into a chat message.
-  if (savedDedup && !options.bypassDedup) {
+  if (savedDedup && useDedup) {
     log(`dedup state: ${dedup.getStats().trackedEvents} events / ${dedup.getStats().trackedLevels} levels loaded`);
   }
   if (options.symbols?.length) {
@@ -348,7 +373,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
       levelId: `${g.side}|${g.levels.slice().sort((x, y) => x - y).join("+")}`,
       state: g.state,
     };
-    const decision = options.bypassDedup ? { send: true, reason: "bypass" as const } : dedup.shouldSend(identity);
+    const decision = useDedup ? dedup.shouldSend(identity) : { send: true, reason: "no_dedup" as const };
     const label = `${g.symbol} ${g.timeframe.toUpperCase()} ${g.side} ${g.state} ×${g.levels.length}`;
     if (!decision.send) {
       suppressed.push({ label, reason: decision.reason });
@@ -372,7 +397,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
       levelId: `${a.side}|${a.price}|${[...a.timeframes].sort().join("+")}`,
       state: "APPROACHING",
     };
-    const decision = options.bypassDedup ? { send: true, reason: "bypass" as const } : dedup.shouldSend(identity);
+    const decision = useDedup ? dedup.shouldSend(identity) : { send: true, reason: "no_dedup" as const };
     const tfLabel = a.timeframes.map((t) => t.toUpperCase()).join("+");
     const label = `${a.symbol} ${tfLabel} ${a.side} 接近 ${a.price}`;
     if (!decision.send) {
@@ -391,7 +416,9 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
     });
   }
 
-  if (!options.bypassDedup) {
+  // Only persist when this run actually consulted dedup, otherwise a passive
+  // query would overwrite the monitor's memory with a state it never used.
+  if (useDedup) {
     store.putState("dedup_state", dedup.exportState());
   }
 

@@ -57,7 +57,10 @@ async function main(): Promise<void> {
   const result = await runScan({
     symbols: explicitSymbols,
     timeframes: onlyTimeframe ? [onlyTimeframe] : undefined,
-    bypassDedup: noDedup,
+    // A scan someone asked for reports the current state in full. Dedup belongs
+    // to push delivery (see ScanOptions.applyDedup); --no-dedup remains as an
+    // explicit no-op for backwards compatibility.
+    applyDedup: false,
     onLog: (m) => console.log(m),
   });
 

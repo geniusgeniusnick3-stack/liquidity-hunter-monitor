@@ -329,6 +329,10 @@ async function runScanner(
   const result = await runScan({
     symbols: opts.symbols,
     timeframes: opts.timeframe ? [opts.timeframe] : undefined,
+    // This is a question, not a push. Answer with the current state, including
+    // levels reported before — someone asking "what is happening?" wants the
+    // live picture, not a diff against the last notification.
+    applyDedup: false,
     // Operator detail goes to the service log, never to the chat.
     onLog: (m) => console.log(`[scan] ${m}`),
   });

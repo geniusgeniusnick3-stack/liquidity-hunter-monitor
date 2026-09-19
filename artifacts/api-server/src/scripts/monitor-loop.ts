@@ -151,6 +151,9 @@ async function main(): Promise<void> {
       const result = await runScan({
         timeframes,
         symbols: explicitSymbols,
+        // Push delivery: suppress events already reported, so a background
+        // monitor does not interrupt about the same level over and over.
+        applyDedup: true,
         // active_concurrency caps how many symbol/timeframe requests are in flight
         // at once, which is what keeps a large universe inside rate limits.
         concurrency: config.monitoring.active_concurrency,

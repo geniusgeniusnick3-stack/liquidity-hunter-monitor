@@ -318,11 +318,6 @@ export function formatScanReply(input: ScanReplyInput, lang: Language = DEFAULT_
   blocks.push(footer.join("\n"));
 
   return blocks.join("\n\n");
-  if (input.failures > 0) {
-    lines.push(t.replyFailed(input.failures, input.scanned));
-  }
-
-  return lines.join("\n");
 }
 
 // ── Structure events (OB / FVG / BOS / CHoCH — optional alert types) ────────
