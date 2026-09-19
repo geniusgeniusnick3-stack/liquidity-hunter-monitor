@@ -196,10 +196,23 @@ export class DynamicUniverseManager {
         if (d.eligible) eligible.push(m);
       }
 
+      const eligibleSet = new Set(eligible.map((m) => m.symbol));
+
+      // Ranking is retained for DISPLAY ORDER and transparency only — it no
+      // longer decides membership, because there is no size cap to rank against.
       const ranked = rankMetrics(eligible);
       const rankBySymbol = new Map(ranked.map((m) => [m.symbol, m.rank ?? Number.MAX_SAFE_INTEGER]));
 
       // ── 5. Hysteresis + core symbols ──
+      //
+      // The universe has NO fixed size cap: every symbol clearing the floors is
+      // monitored, so 38 eligible means 38 and 61 means 61. Anti-churn hysteresis
+      // therefore cannot be expressed as a rank position (that required a cap);
+      // it is expressed as a GAP BETWEEN THRESHOLDS instead.
+      //
+      // An incumbent stays while it still clears a relaxed version of the floors.
+      // It must genuinely decay before being dropped, which is the same guard the
+      // rank buffer provided, but it does not constrain how many symbols qualify.
       const allSymbolSet = new Set(allMetrics.map((m) => m.symbol));
       const core = cfg.universe.core_symbols
         .map((s) => s.toUpperCase())
@@ -208,34 +221,29 @@ export class DynamicUniverseManager {
       const previous = this.snapshot?.activeSymbols ?? [];
       const previousNonCore = previous.filter((s) => !core.includes(s));
 
-      // Incumbents survive until they fall past the removal rank.
+      const exitFactor = cfg.universe.exit_threshold_factor;
+      const relaxedFilters = {
+        minQuoteVolume24hUsd: filters.minQuoteVolume24hUsd * exitFactor,
+        minMedianDailyVolume7dUsd: filters.minMedianDailyVolume7dUsd * exitFactor,
+        minOpenInterestUsd: filters.minOpenInterestUsd * exitFactor,
+        // Spread and listing age are quality gates, not size gates — a wider
+        // spread is a reason to drop a symbol promptly, not to keep it.
+        maxSpreadBps: filters.maxSpreadBps,
+        minListingAgeDays: filters.minListingAgeDays,
+      };
+
+      const metricsBySymbolForEval = new Map(allMetrics.map((m) => [m.symbol, m]));
+
       const incumbents = previousNonCore.filter((s) => {
-        const r = rankBySymbol.get(s);
-        return r !== undefined && r <= cfg.universe.removal_rank;
+        const m = metricsBySymbolForEval.get(s);
+        if (!m) return false;                       // delisted — drop
+        if (eligibleSet.has(s)) return true;         // still qualifies outright
+        // Only a genuine decay past the relaxed floors removes it.
+        return evaluateEligibility(m, relaxedFilters).eligible;
       });
 
-      // Hysteresis must not fight the size cap.
-      //
-      // Incumbents are kept as long as they hold rank <= removal_rank — that is
-      // the entire point of having two thresholds. Filling `active_size` with
-      // entrants regardless of available room would evict a rank-51 incumbent
-      // that policy says must stay; the evicted symbol then re-qualifies on the
-      // next refresh, producing permanent 1-in/1-out churn (observed as
-      // added=1/removed=1 across two refreshes on an unchanged market).
-      //
-      // So: incumbents are protected, entrants only fill available room, and
-      // the watchlist only shrinks when an incumbent falls past removal_rank.
-      const active = [...new Set([...core, ...incumbents])];
-      const room = Math.max(0, cfg.universe.active_size - active.length);
-
-      if (room > 0) {
-        const fresh = ranked
-          .filter((m) => (m.rank ?? 0) > 0 && (m.rank ?? 0) <= cfg.universe.entry_rank)
-          .map((m) => m.symbol)
-          .filter((s) => !active.includes(s))
-          .slice(0, room);
-        active.push(...fresh);
-      }
+      // No cap: eligible symbols all join; incumbents are protected on top.
+      const active = [...new Set([...core, ...eligible.map((m) => m.symbol), ...incumbents])];
 
       // Stable presentation order: core first (config order), then by rank.
       const ordered = [...active].sort((a, b) => {

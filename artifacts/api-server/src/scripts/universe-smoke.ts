@@ -25,7 +25,7 @@ function pad(s: string, n: number): string {
 async function main(): Promise<void> {
   const cfg = loadConfig();
   console.log("=== 設定（config.yaml）===");
-  console.log("  active_size=" + cfg.universe.active_size + "  entry_rank=" + cfg.universe.entry_rank + "  removal_rank=" + cfg.universe.removal_rank);
+  console.log("  大小=動態（無上限）  exit_threshold_factor=" + cfg.universe.exit_threshold_factor);
   console.log("  core=" + cfg.universe.core_symbols.join(", "));
   console.log(
     "  filters: 24h>=$" + (cfg.universe.filters.min_quote_volume_24h_usd / 1e6).toFixed(0) + "M" +
@@ -95,16 +95,26 @@ async function main(): Promise<void> {
   console.log("  排序也完全相同：" + sameOrder + (sameMembers && !sameOrder ? "（成員一致、僅排序依 rank 微調）" : ""));
 
   const corePresent = cfg.universe.core_symbols.every((c) => snap.activeSymbols.includes(c));
+  // No size cap is asserted any more: the universe size is dynamic by design, so
+  // the checks are "non-empty", "every member is genuinely eligible or core",
+  // and "stable across two consecutive refreshes".
+  const allMembersJustified = snap.activeSymbols.every((s) =>
+    snap.coreSymbols.includes(s) || snap.decisions[s]?.eligible === true,
+  );
+  const noFixedCap = !("active_size" in cfg.universe);
   const ok = snap.activeSymbols.length > 0
-    && snap.activeSymbols.length <= cfg.universe.active_size
     && corePresent
+    && allMembersJustified
+    && noFixedCap
     && snap2.added.length === 0
     && snap2.removed.length === 0;
 
   console.log("");
   console.log("=== 驗收 ===");
   console.log("  core 全數在清單內：" + corePresent);
-  console.log("  清單大小 <= active_size：" + (snap.activeSymbols.length <= cfg.universe.active_size));
+  console.log("  每個成員都合格或是 core：" + allMembersJustified);
+  console.log("  無固定大小上限：" + noFixedCap);
+  console.log("  連續兩次刷新穩定（added=0/removed=0）：" + (snap2.added.length === 0 && snap2.removed.length === 0));
   console.log(ok ? "  ✅ PASS" : "  ❌ FAIL");
 }
 
