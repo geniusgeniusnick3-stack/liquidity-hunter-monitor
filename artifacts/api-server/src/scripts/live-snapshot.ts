@@ -17,6 +17,7 @@ import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { runScan } from "../lib/scan/ScanEngine.js";
 import { telegramNotifier } from "../lib/notify/TelegramNotifier.js";
+import { uiFor } from "../lib/notify/i18n.js";
 
 (function loadEnv(): void {
   const envPath = path.resolve(process.cwd(), ".env");
@@ -60,53 +61,57 @@ async function main(): Promise<void> {
     onLog: (m) => console.log(m),
   });
 
+  // Everything the user reads follows the resolved language, including this
+  // summary — not just the alert bodies. Otherwise switching to English yields a
+  // half-translated conversation.
+  const t = uiFor(result.language);
+
   console.log("");
   console.log("═".repeat(64));
-  console.log(`掃描完成：${result.scanned} 組（幣×時框），失敗 ${result.failures} 組`);
-  console.log(`追蹤幣種：${result.symbolCount} 個`);
-  console.log(`最新一根已收盤的 K 線：${fmtTime(result.latestCandleTime)}（台灣時間）`);
+  console.log(t.scanDone(result.scanned, result.failures));
+  console.log(t.trackedSymbols(result.symbolCount));
+  console.log(t.latestClosedCandle(fmtTime(result.latestCandleTime)));
   console.log("═".repeat(64));
   console.log("");
-  console.log(`【剛發生的事件】${result.events.length} 則（已把同一根 K 線的多個價位合併）`);
+  console.log(t.eventsHeading(result.events.length));
   for (const g of result.events) {
     console.log(`  • ${g.symbol} ${g.timeframe.toUpperCase()} ${g.side} ${g.state} ×${g.levels.length} @ ${g.levels.join(", ")}`);
   }
-  if (result.events.length === 0) console.log("  無。");
+  if (result.events.length === 0) console.log(`  ${t.none}`);
 
   console.log("");
-  console.log(`【同區域已處理過，不再重複報】${result.historySkipped.length} 筆`);
+  console.log(t.historyHeading(result.historySkipped.length));
   for (const h of result.historySkipped.slice(0, 15)) {
     const when = h.priorAt ? fmtTime(h.priorAt / 1000) : "—";
-    console.log(`  ⊘ ${h.symbol} ${h.timeframe.toUpperCase()} ${h.side} ${h.price} — 同區域 ${h.priorPrice} 已於 ${when} ${h.priorState}`);
+    console.log(`  ⊘ ${h.symbol} ${h.timeframe.toUpperCase()} ${h.side} ${h.price} — ${t.sameArea} ${h.priorPrice} ${t.wasOn} ${when} ${h.priorState}`);
   }
-  if (result.historySkipped.length > 15) console.log(`  …其餘 ${result.historySkipped.length - 15} 筆`);
-  if (result.historySkipped.length === 0) console.log("  無。");
+  if (result.historySkipped.length > 15) console.log(`  ${t.more(result.historySkipped.length - 15)}`);
+  if (result.historySkipped.length === 0) console.log(`  ${t.none}`);
 
   console.log("");
-  console.log(`【接近中】${result.approaches.length} 則（已合併跨時框重複）`);
+  console.log(t.approachesHeading(result.approaches.length));
   for (const a of result.approaches.slice(0, 20)) {
-    const tfLabel = a.timeframes.map((t) => t.toUpperCase()).join("+");
-    console.log(`  • ${a.symbol} ${tfLabel} ${a.side} ${a.price}（距離 ${a.distancePct.toFixed(2)}%）`);
+    const tfLabel = a.timeframes.map((x) => x.toUpperCase()).join("+");
+    console.log(`  • ${a.symbol} ${tfLabel} ${a.side} ${a.price}（${a.distancePct.toFixed(2)}%）`);
   }
-  if (result.approaches.length > 20) console.log(`  …其餘 ${result.approaches.length - 20} 筆`);
-  if (result.approaches.length === 0) console.log("  無。");
+  if (result.approaches.length > 20) console.log(`  ${t.more(result.approaches.length - 20)}`);
+  if (result.approaches.length === 0) console.log(`  ${t.none}`);
 
   console.log("");
-  console.log(`=== 通過去重／冷卻、待發送：${result.pending.length} 則 ===`);
+  console.log(t.pendingHeading(result.pending.length));
   for (const a of result.pending) console.log(`  • ${a.label}`);
   for (const s2 of result.suppressed) {
-    const why = s2.reason === "cooldown_active" ? "冷卻中" : "已通知過";
+    const why = s2.reason === "cooldown_active" ? t.reasonCooldown : t.reasonAlreadySent;
     console.log(`  ⊘ ${s2.label} — ${why}`);
   }
 
   if (!shouldSend) {
     console.log("");
-    console.log("（演練模式：加上 --send 才會實際發送）");
+    console.log(t.dryRunNote);
     return;
   }
 
   console.log("");
-  console.log("=== 發送 ===");
   let sent = 0;
   let failed = 0;
   for (const alert of result.pending) {
@@ -120,7 +125,7 @@ async function main(): Promise<void> {
     }
   }
   console.log("");
-  console.log(`共發送 ${sent} 則${failed ? `，失敗 ${failed} 則` : ""}`);
+  console.log(failed ? t.sentWithFailures(sent, failed) : t.sentCount(sent));
 }
 
 main().catch((err) => {

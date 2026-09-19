@@ -39,6 +39,7 @@ import { loadConfig } from "../lib/config/index.js";
 import { runScan } from "../lib/scan/ScanEngine.js";
 import { candleCache, nextCandleClose, TF_MS } from "../lib/market/CandleCache.js";
 import { telegramNotifier } from "../lib/notify/TelegramNotifier.js";
+import { uiFor } from "../lib/notify/i18n.js";
 import { logger } from "../lib/logger.js";
 
 (function loadEnv(): void {
@@ -192,34 +193,35 @@ async function main(): Promise<void> {
       // script's output: the two modes must be comparable line for line, and
       // verify-mode-parity.ts depends on that to prove they agree.
       if (once) {
+        const t = uiFor(result.language);
         console.log("");
-        console.log(`掃描完成：${result.scanned} 組（幣×時框），失敗 ${result.failures} 組`);
-        console.log(`追蹤幣種：${result.symbolCount} 個`);
+        console.log(t.scanDone(result.scanned, result.failures));
+        console.log(t.trackedSymbols(result.symbolCount));
         console.log("");
-        console.log(`【剛發生的事件】${result.events.length} 則`);
+        console.log(t.eventsHeading(result.events.length));
         for (const g of result.events) {
           console.log(`  • ${g.symbol} ${g.timeframe.toUpperCase()} ${g.side} ${g.state} ×${g.levels.length} @ ${g.levels.join(", ")}`);
         }
-        if (result.events.length === 0) console.log("  無。");
+        if (result.events.length === 0) console.log(`  ${t.none}`);
         console.log("");
-        console.log(`【同區域已處理過，不再重複報】${result.historySkipped.length} 筆`);
+        console.log(t.historyHeading(result.historySkipped.length));
         for (const h of result.historySkipped) {
           const when = h.priorAt ? fmtTaipei(h.priorAt / 1000) : "—";
-          console.log(`  ⊘ ${h.symbol} ${h.timeframe.toUpperCase()} ${h.side} ${h.price} — 同區域 ${h.priorPrice} 已於 ${when} ${h.priorState}`);
+          console.log(`  ⊘ ${h.symbol} ${h.timeframe.toUpperCase()} ${h.side} ${h.price} — ${t.sameArea} ${h.priorPrice} ${t.wasOn} ${when} ${h.priorState}`);
         }
-        if (result.historySkipped.length === 0) console.log("  無。");
+        if (result.historySkipped.length === 0) console.log(`  ${t.none}`);
         console.log("");
-        console.log(`【接近中】${result.approaches.length} 則`);
+        console.log(t.approachesHeading(result.approaches.length));
         for (const a of result.approaches) {
-          const tfLabel = a.timeframes.map((t) => t.toUpperCase()).join("+");
-          console.log(`  • ${a.symbol} ${tfLabel} ${a.side} ${a.price}（距離 ${a.distancePct.toFixed(2)}%）`);
+          const tfLabel = a.timeframes.map((x) => x.toUpperCase()).join("+");
+          console.log(`  • ${a.symbol} ${tfLabel} ${a.side} ${a.price}（${a.distancePct.toFixed(2)}%）`);
         }
-        if (result.approaches.length === 0) console.log("  無。");
+        if (result.approaches.length === 0) console.log(`  ${t.none}`);
         console.log("");
-        console.log(`=== 通過去重／冷卻、待發送：${result.pending.length} 則 ===`);
+        console.log(t.pendingHeading(result.pending.length));
         for (const a of result.pending) console.log(`  • ${a.label}`);
         for (const s2 of result.suppressed) {
-          const why = s2.reason === "cooldown_active" ? "冷卻中" : "已通知過";
+          const why = s2.reason === "cooldown_active" ? t.reasonCooldown : t.reasonAlreadySent;
           console.log(`  ⊘ ${s2.label} — ${why}`);
         }
       }

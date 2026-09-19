@@ -181,6 +181,237 @@ export const STRINGS: Record<Language, AlertStrings> = {
   en: EN,
 };
 
+// ── Interface text ──────────────────────────────────────────────────────────
+//
+// Alert bodies are only half of what a user reads. Command replies and scan
+// summaries are the other half, and leaving those hard-coded in one language
+// means switching the setting produces a half-translated conversation.
+
+export interface UiStrings {
+  // scan summary
+  dedupLoaded: (events: number, levels: number) => string;
+  explicitSymbols: (list: string) => string;
+  universeLoaded: (count: number, eligible: number) => string;
+  scanDone: (pairs: number, failures: number) => string;
+  trackedSymbols: (n: number) => string;
+  latestClosedCandle: (when: string) => string;
+  eventsHeading: (n: number) => string;
+  historyHeading: (n: number) => string;
+  approachesHeading: (n: number) => string;
+  pendingHeading: (n: number) => string;
+  none: string;
+  more: (n: number) => string;
+  dryRunNote: string;
+  sentCount: (n: number) => string;
+  sentWithFailures: (n: number, failed: number) => string;
+  reasonCooldown: string;
+  reasonAlreadySent: string;
+  sameArea: string;
+  wasOn: string;
+
+  // command replies
+  helpText: string;
+  scanning: (scope: string) => string;
+  botStarted: string;
+  unknownLanguage: (value: string, supported: string) => string;
+  languageSwitched: (code: string, label: string) => string;
+  languagePinned: (code: string, envLang: string) => string;
+  languageLine: (code: string, label: string) => string;
+  languageOriginEnv: string;
+  languageOriginUser: string;
+  languageOriginConfig: string;
+  switchWays: string;
+  modeReportActive: string;
+  modeReportPassive: string;
+  analysisTimeframes: string;
+  alertLanguage: string;
+  modeSwitchHow: string;
+}
+
+const UI_ZH_TW: UiStrings = {
+  dedupLoaded: (e, l) => `已載入去重狀態：${e} 筆事件、${l} 個價位`,
+  explicitSymbols: (list) => `使用指定幣種：${list}`,
+  universeLoaded: (c, e) => `監控清單：${c} 個幣（${e} 個通過流動性門檻）`,
+  scanDone: (p, f) => `掃描完成：${p} 組（幣×時框），失敗 ${f} 組`,
+  trackedSymbols: (n) => `追蹤幣種：${n} 個`,
+  latestClosedCandle: (w) => `最新一根已收盤的 K 線：${w}（台灣時間）`,
+  eventsHeading: (n) => `【剛發生的事件】${n} 則（已把同一根 K 線的多個價位合併）`,
+  historyHeading: (n) => `【同區域已處理過，不再重複報】${n} 筆`,
+  approachesHeading: (n) => `【接近中】${n} 則（已合併跨時框重複）`,
+  pendingHeading: (n) => `=== 通過去重／冷卻、待發送：${n} 則 ===`,
+  none: "無。",
+  more: (n) => `…其餘 ${n} 筆`,
+  dryRunNote: "（演練模式：加上 --send 才會實際發送）",
+  sentCount: (n) => `共發送 ${n} 則`,
+  sentWithFailures: (n, f) => `共發送 ${n} 則，失敗 ${f} 則`,
+  reasonCooldown: "冷卻中",
+  reasonAlreadySent: "已通知過",
+  sameArea: "同區域",
+  wasOn: "已於",
+
+  helpText: `【流動性獵人 — 指令】
+
+/scan — 掃描全部（目前追蹤的幣）
+/scan BTCUSDT — 只掃這個幣
+/scan BTCUSDT 1h — 只掃這個幣的這個時框
+/events — 看現在有什麼（不重新掃描）
+/status — 系統狀態
+/mode — 目前的監控模式
+/language — 查詢通知語言
+/language zh-TW — 切換為繁體中文
+/language zh-CN — 切換為簡體中文
+/language en — 切換為英文
+/help — 這個說明
+
+監控模式：
+  PASSIVE（預設）— 你下指令才動作，不會主動通知
+  ACTIVE — 背景持續監控，有新事件會主動通知
+
+ACTIVE 必須由使用者明確開啟，不會自動啟動。`,
+
+  scanning: (scope) => `🔍 開始掃描 ${scope}…`,
+  botStarted: "🟢 流動性獵人被動模式已啟動。\n輸入 /help 看指令。",
+  unknownLanguage: (v, s) => `無法辨識的語言：「${v}」\n\n支援：${s}\n（也接受 zh_Hant、cn、en-US 等常見寫法）`,
+  languageSwitched: (c, l) => `✅ 通知語言已切換為 ${c}（${l}）\n\n下一則通知即生效，不需要重啟。`,
+  languagePinned: (c, e) => `已記錄為 ${c}，但環境變數 NOTIFICATION_LANGUAGE=${e} 的優先序更高。\n\n實際發送的通知仍會是環境變數指定的語言。\n要真正切換，請調整環境變數後重啟服務。`,
+  languageLine: (c, l) => `Language: ${c}（${l}）`,
+  languageOriginEnv: "由環境變數 NOTIFICATION_LANGUAGE 指定",
+  languageOriginUser: "由你在此設定的",
+  languageOriginConfig: "由 config.yaml 的預設值",
+  switchWays: "切換方式：\n/language zh-TW — 繁體中文\n/language zh-CN — 简体中文\n/language en — English",
+  modeReportActive: "背景持續監控中，有新事件會主動通知。",
+  modeReportPassive: "只在你下指令時掃描，不會主動通知。",
+  analysisTimeframes: "分析時框",
+  alertLanguage: "通知語言",
+  modeSwitchHow: "要切換模式：修改 config.yaml 的 monitoring.mode，或設定環境變數\nMONITORING_MODE=active / passive，然後重啟服務。",
+};
+
+const UI_ZH_CN: UiStrings = {
+  dedupLoaded: (e, l) => `已载入去重状态：${e} 笔事件、${l} 个价位`,
+  explicitSymbols: (list) => `使用指定币种：${list}`,
+  universeLoaded: (c, e) => `监控清单：${c} 个币（${e} 个通过流动性门槛）`,
+  scanDone: (p, f) => `扫描完成：${p} 组（币×时间框），失败 ${f} 组`,
+  trackedSymbols: (n) => `追踪币种：${n} 个`,
+  latestClosedCandle: (w) => `最新一根已收盘的 K 线：${w}（台湾时间）`,
+  eventsHeading: (n) => `【刚发生的事件】${n} 则（已把同一根 K 线的多个价位合并）`,
+  historyHeading: (n) => `【同区域已处理过，不再重复报】${n} 笔`,
+  approachesHeading: (n) => `【接近中】${n} 则（已合并跨时间框重复）`,
+  pendingHeading: (n) => `=== 通过去重／冷却、待发送：${n} 则 ===`,
+  none: "无。",
+  more: (n) => `…其余 ${n} 笔`,
+  dryRunNote: "（演练模式：加上 --send 才会实际发送）",
+  sentCount: (n) => `共发送 ${n} 则`,
+  sentWithFailures: (n, f) => `共发送 ${n} 则，失败 ${f} 则`,
+  reasonCooldown: "冷却中",
+  reasonAlreadySent: "已通知过",
+  sameArea: "同区域",
+  wasOn: "已于",
+
+  helpText: `【流动性猎人 — 指令】
+
+/scan — 扫描全部（目前追踪的币）
+/scan BTCUSDT — 只扫这个币
+/scan BTCUSDT 1h — 只扫这个币的这个时间框
+/events — 看现在有什么（不重新扫描）
+/status — 系统状态
+/mode — 目前的监控模式
+/language — 查询通知语言
+/language zh-TW — 切换为繁体中文
+/language zh-CN — 切换为简体中文
+/language en — 切换为英文
+/help — 这个说明
+
+监控模式：
+  PASSIVE（预设）— 你下指令才动作，不会主动通知
+  ACTIVE — 背景持续监控，有新事件会主动通知
+
+ACTIVE 必须由使用者明确开启，不会自动启动。`,
+
+  scanning: (scope) => `🔍 开始扫描 ${scope}…`,
+  botStarted: "🟢 流动性猎人被动模式已启动。\n输入 /help 看指令。",
+  unknownLanguage: (v, s) => `无法辨识的语言：「${v}」\n\n支援：${s}\n（也接受 zh_Hant、cn、en-US 等常见写法）`,
+  languageSwitched: (c, l) => `✅ 通知语言已切换为 ${c}（${l}）\n\n下一则通知即生效，不需要重启。`,
+  languagePinned: (c, e) => `已记录为 ${c}，但环境变数 NOTIFICATION_LANGUAGE=${e} 的优先序更高。\n\n实际发送的通知仍会是环境变数指定的语言。\n要真正切换，请调整环境变数后重启服务。`,
+  languageLine: (c, l) => `Language: ${c}（${l}）`,
+  languageOriginEnv: "由环境变数 NOTIFICATION_LANGUAGE 指定",
+  languageOriginUser: "由你在此设定的",
+  languageOriginConfig: "由 config.yaml 的预设值",
+  switchWays: "切换方式：\n/language zh-TW — 繁體中文\n/language zh-CN — 简体中文\n/language en — English",
+  modeReportActive: "背景持续监控中，有新事件会主动通知。",
+  modeReportPassive: "只在你下指令时扫描，不会主动通知。",
+  analysisTimeframes: "分析时间框",
+  alertLanguage: "通知语言",
+  modeSwitchHow: "要切换模式：修改 config.yaml 的 monitoring.mode，或设定环境变数\nMONITORING_MODE=active / passive，然后重启服务。",
+};
+
+const UI_EN: UiStrings = {
+  dedupLoaded: (e, l) => `Dedup state loaded: ${e} events, ${l} levels`,
+  explicitSymbols: (list) => `Using specified symbols: ${list}`,
+  universeLoaded: (c, e) => `Universe: ${c} symbols (${e} cleared the liquidity floors)`,
+  scanDone: (p, f) => `Scan complete: ${p} symbol/timeframe pairs, ${f} failed`,
+  trackedSymbols: (n) => `Tracked symbols: ${n}`,
+  latestClosedCandle: (w) => `Latest closed candle: ${w} (Taipei time)`,
+  eventsHeading: (n) => `[Events just triggered] ${n} (levels settled by the same candle are merged)`,
+  historyHeading: (n) => `[Same area already handled — not repeated] ${n}`,
+  approachesHeading: (n) => `[Approaching] ${n} (cross-timeframe duplicates merged)`,
+  pendingHeading: (n) => `=== Passed dedup/cooldown, ready to send: ${n} ===`,
+  none: "None.",
+  more: (n) => `…${n} more`,
+  dryRunNote: "(dry run: add --send to actually transmit)",
+  sentCount: (n) => `Sent ${n}`,
+  sentWithFailures: (n, f) => `Sent ${n}, ${f} failed`,
+  reasonCooldown: "in cooldown",
+  reasonAlreadySent: "already notified",
+  sameArea: "same area",
+  wasOn: "on",
+
+  helpText: `[Liquidity Hunter — Commands]
+
+/scan — scan everything currently tracked
+/scan BTCUSDT — scan one symbol
+/scan BTCUSDT 1h — scan one symbol on one timeframe
+/events — show what is live now (no re-scan)
+/status — system state
+/mode — current monitoring mode
+/language — show the alert language
+/language zh-TW — switch to Traditional Chinese
+/language zh-CN — switch to Simplified Chinese
+/language en — switch to English
+/help — this message
+
+Monitoring modes:
+  PASSIVE (default) — acts only when you ask; no unsolicited alerts
+  ACTIVE — runs in the background and pushes alerts on new events
+
+ACTIVE must be enabled explicitly. It never starts on its own.`,
+
+  scanning: (scope) => `🔍 Scanning ${scope}…`,
+  botStarted: "🟢 Liquidity Hunter passive mode is running.\nSend /help for commands.",
+  unknownLanguage: (v, s) => `Unrecognised language: "${v}"\n\nSupported: ${s}\n(zh_Hant, cn, en-US and similar spellings are also accepted)`,
+  languageSwitched: (c, l) => `✅ Alert language switched to ${c} (${l})\n\nTakes effect on the next alert. No restart needed.`,
+  languagePinned: (c, e) => `Recorded as ${c}, but the NOTIFICATION_LANGUAGE=${e} environment variable takes precedence.\n\nAlerts will still be sent in the environment's language.\nChange the environment variable and restart to switch for real.`,
+  languageLine: (c, l) => `Language: ${c} (${l})`,
+  languageOriginEnv: "set by the NOTIFICATION_LANGUAGE environment variable",
+  languageOriginUser: "set by you here",
+  languageOriginConfig: "the default from config.yaml",
+  switchWays: "Switch with:\n/language zh-TW — Traditional Chinese\n/language zh-CN — Simplified Chinese\n/language en — English",
+  modeReportActive: "Monitoring in the background; new events are pushed.",
+  modeReportPassive: "Scans only when you ask. Nothing is pushed.",
+  analysisTimeframes: "Timeframes",
+  alertLanguage: "Alert language",
+  modeSwitchHow: "To switch: set monitoring.mode in config.yaml, or set the environment\nvariable MONITORING_MODE=active / passive, then restart the service.",
+};
+
+export const UI: Record<Language, UiStrings> = {
+  "zh-TW": UI_ZH_TW,
+  "zh-CN": UI_ZH_CN,
+  en: UI_EN,
+};
+
+export function uiFor(language: Language): UiStrings {
+  return UI[language] ?? UI[DEFAULT_LANGUAGE];
+}
+
 export function stringsFor(language: Language): AlertStrings {
   return STRINGS[language] ?? STRINGS[DEFAULT_LANGUAGE];
 }

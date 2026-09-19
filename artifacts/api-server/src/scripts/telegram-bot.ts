@@ -87,6 +87,25 @@ async function tg(method: string, body: Record<string, unknown>): Promise<TgResp
   return json;
 }
 
+/**
+ * Current language, resolved the same way scans resolve it.
+ *
+ * Read per reply rather than cached at boot so a /language change is reflected
+ * immediately in the bot's own messages, not only in the alerts it forwards.
+ */
+function currentLanguage(): Language {
+  const store = getLiquidityStore();
+  return resolveLanguage(
+    loadConfig().notifications.language,
+    () => store.getState<string>(LANGUAGE_OVERRIDE_KEY),
+  ).language;
+}
+
+/** Interface strings for the language currently in effect. */
+function ui() {
+  return uiFor(currentLanguage());
+}
+
 async function reply(text: string): Promise<void> {
   await tg("sendMessage", {
     chat_id: AUTH_CHAT_ID,
@@ -96,12 +115,13 @@ async function reply(text: string): Promise<void> {
   });
 }
 
-import { parseCommand, HELP, type Command } from "./telegram-commands.js";
+import { parseCommand, type Command } from "./telegram-commands.js";
 import {
   resolveLanguage,
   normaliseLanguage,
   LANGUAGE_OVERRIDE_KEY,
   SUPPORTED_LANGUAGES,
+  uiFor,
   type Language,
 } from "../lib/notify/i18n.js";
 import { getLiquidityStore } from "../lib/persistence/LiquidityStore.js";
@@ -110,7 +130,7 @@ import { loadConfig } from "../lib/config/index.js";
 async function main(): Promise<void> {
   const me = await tg("getMe", {});
   console.log(`Bot 上線：@${me?.result?.username}（只回應 chat ${AUTH_CHAT_ID}）`);
-  await reply("🟢 流動性獵人被動模式已啟動。\n輸入 /help 看指令。");
+  await reply(ui().botStarted);
 
   let offset = 0;
   // Long polling: a passive bot can idle forever without generating traffic.
@@ -149,7 +169,7 @@ async function main(): Promise<void> {
 async function handle(parsed: Command): Promise<void> {
   switch (parsed.kind) {
     case "help":
-      await reply(HELP);
+      await reply(ui().helpText);
       break;
     case "events":
       // Dry run: show what is live right now without sending anything.
@@ -171,7 +191,7 @@ async function handle(parsed: Command): Promise<void> {
       const scope = parsed.req?.symbol
         ? `${parsed.req.symbol}${parsed.req.timeframe ? " " + parsed.req.timeframe.toUpperCase() : ""}`
         : "全部追蹤幣種";
-      await reply(`🔍 開始掃描 ${scope}…`);
+      await reply(ui().scanning(scope));
       await runScanner(args, true);
       break;
     }
@@ -205,37 +225,31 @@ async function handleLanguage(value?: string): Promise<string> {
     en: "English",
   };
 
+  const t = ui();
+
   if (!value) {
     const { language, source } = resolveLanguage(
       cfg.notifications.language,
       () => store.getState<string>(LANGUAGE_OVERRIDE_KEY),
     );
     const origin = source === "env"
-      ? "由環境變數 NOTIFICATION_LANGUAGE 指定"
+      ? t.languageOriginEnv
       : source === "user"
-        ? "由你在此設定的"
-        : "由 config.yaml 的預設值";
+        ? t.languageOriginUser
+        : t.languageOriginConfig;
 
     return [
-      `Language: ${language}（${label[language]}）`,
+      t.languageLine(language, label[language]),
       "",
-      `目前語言${origin}。`,
+      `${origin}。`,
       "",
-      "切換方式：",
-      "/language zh-TW — 繁體中文",
-      "/language zh-CN — 简体中文",
-      "/language en — English",
+      t.switchWays,
     ].join("\n");
   }
 
   const normalised = normaliseLanguage(value);
   if (!normalised) {
-    return [
-      `無法辨識的語言：「${value}」`,
-      "",
-      `支援：${SUPPORTED_LANGUAGES.join("、")}`,
-      "（也接受 zh_Hant、cn、en-US 等常見寫法）",
-    ].join("\n");
+    return t.unknownLanguage(value, SUPPORTED_LANGUAGES.join("、"));
   }
 
   store.putState(LANGUAGE_OVERRIDE_KEY, normalised);
@@ -244,39 +258,28 @@ async function handleLanguage(value?: string): Promise<string> {
   // change the user will not actually see.
   const envPinned = normaliseLanguage(process.env.NOTIFICATION_LANGUAGE ?? "");
   if (envPinned && envPinned !== normalised) {
-    return [
-      `已記錄為 ${normalised}，但環境變數 NOTIFICATION_LANGUAGE=${envPinned} 的優先序更高。`,
-      "",
-      "實際發送的通知仍會是環境變數指定的語言。",
-      "要真正切換，請調整環境變數後重啟服務。",
-    ].join("\n");
+    return t.languagePinned(normalised, envPinned);
   }
 
-  return [
-    `✅ 通知語言已切換為 ${normalised}（${label[normalised]}）`,
-    "",
-    "下一則通知即生效，不需要重啟。",
-  ].join("\n");
+  // Reply in the NEW language — the user just asked for it, so answering in the
+  // old one is the exact confusion this command exists to remove.
+  return uiFor(normalised).languageSwitched(normalised, label[normalised]);
 }
 
 async function buildModeReport(): Promise<string> {
   const cfg = loadConfig();
+  const t = ui();
   const mode = cfg.monitoring.mode;
-
-  const explanation = mode === "active"
-    ? "背景持續監控中，有新事件會主動通知。"
-    : "只在你下指令時掃描，不會主動通知。";
 
   return [
     `Monitoring Mode: ${mode.toUpperCase()}`,
     "",
-    explanation,
+    mode === "active" ? t.modeReportActive : t.modeReportPassive,
     "",
-    `分析時框：${cfg.timeframes.map((t: string) => t.toUpperCase()).join("、")}`,
-    `通知語言：${cfg.notifications.language}`,
+    `${t.analysisTimeframes}：${cfg.timeframes.map((x: string) => x.toUpperCase()).join("、")}`,
+    `${t.alertLanguage}：${currentLanguage()}`,
     "",
-    "要切換模式：修改 config.yaml 的 monitoring.mode，或設定環境變數",
-    "MONITORING_MODE=active / passive，然後重啟服務。",
+    t.modeSwitchHow,
   ].join("\n");
 }
 
@@ -285,18 +288,18 @@ async function buildStatus(): Promise<string> {
   const store = getLiquidityStore();
   const stats = store.getStats();
 
+  const t = ui();
+  const mode = cfg.monitoring.mode;
+
   return [
-    "【流動性獵人 — 系統狀態】",
+    `Monitoring Mode: ${mode.toUpperCase()}`,
     "",
-    `模式：被動（只在你下指令時動作）`,
-    `追蹤時框：${cfg.timeframes.map((t: string) => t.toUpperCase()).join("、")}`,
-    `接近門檻：${cfg.alert_thresholds.approaching_distance_pct}%`,
-    `同區域記憶：${cfg.liquidity.region_lookback_days} 天內｜容忍度 ${cfg.liquidity.region_tolerance_pct}%`,
+    `${t.analysisTimeframes}：${cfg.timeframes.map((x: string) => x.toUpperCase()).join("、")}`,
+    `${t.alertLanguage}：${currentLanguage()}`,
     "",
-    `帳本：${stats.levels} 筆價位（${stats.activeLevels} 筆仍有效）`,
-    `事件紀錄：${stats.events} 筆`,
+    `${t.trackedSymbols(stats.levels)}`,
     "",
-    "系統不會主動通知。要掃描請輸入 /scan",
+    mode === "active" ? t.modeReportActive : t.modeReportPassive,
   ].join("\n");
 }
 

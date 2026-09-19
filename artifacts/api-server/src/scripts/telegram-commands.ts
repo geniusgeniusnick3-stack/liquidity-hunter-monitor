@@ -59,7 +59,11 @@ export function parseCommand(raw: string): Command {
   }
 }
 
-export const HELP = `【流動性獵人 — 指令】
+/**
+ * Kept only as a fallback for callers that have no language context (the test
+ * suite). The bot renders help from i18n so it follows the user's language.
+ */
+export const HELP_FALLBACK = `【流動性獵人 — 指令】
 
 /scan — 掃描全部（目前追蹤的幣）
 /scan BTCUSDT — 只掃這個幣

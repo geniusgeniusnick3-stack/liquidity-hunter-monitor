@@ -139,6 +139,21 @@ reformat the operator's comments.
 and the bot says so plainly ("recorded, but the env var takes precedence") rather
 than appearing to succeed.
 
+### Scope: everything the user can read
+
+The setting covers **all** user-visible text, not only alert bodies:
+
+| Category | Follows the language setting |
+|---|---|
+| Liquidity alerts (approaching / swept / broken) | ✅ |
+| The `/scan` summary report | ✅ |
+| Replies to `/help`, `/mode`, `/status`, `/language` | ✅ |
+| Startup message, error notices | ✅ |
+| ICT abbreviations (BSL / SSL / SWEPT / BROKEN) | ➖ always English, to match charts |
+
+This is covered by tests: after a switch, each of the above must actually change,
+and English output must contain no CJK characters.
+
 ---
 
 ## Relationship to the upstream project

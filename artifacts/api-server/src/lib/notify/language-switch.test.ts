@@ -122,5 +122,53 @@ console.log("環境變數釘住時，切換必須誠實告知不生效");
   delete process.env.NOTIFICATION_LANGUAGE;
 }
 
+console.log("─".repeat(60));
+console.log("介面文案也必須跟隨語言（不只是通知內容）");
+
+{
+  const { uiFor } = await import("./i18n.js");
+
+  // Regression: switching to English used to translate the alert bodies but
+  // leave command replies and scan summaries in Traditional Chinese, producing a
+  // half-translated conversation. Every user-visible string now comes from here.
+  for (const lang of ["zh-TW", "zh-CN", "en"] as const) {
+    const t = uiFor(lang);
+    ok(t.scanDone(1, 0).length > 0, `[${lang}] 掃描摘要文案存在`);
+    ok(t.eventsHeading(1).length > 0, `[${lang}] 事件標題文案存在`);
+    ok(t.helpText.length > 0, `[${lang}] 指令說明存在`);
+    ok(t.helpText.includes("/language"), `[${lang}] 指令說明含 /language`);
+    ok(t.none.length > 0, `[${lang}] 「無」的文案存在`);
+    ok(t.botStarted.length > 0, `[${lang}] 啟動訊息存在`);
+  }
+
+  // 三種語言的同一句話必須真的不同
+  const tw = uiFor("zh-TW");
+  const cn = uiFor("zh-CN");
+  const en = uiFor("en");
+  ok(tw.scanDone(1, 0) !== cn.scanDone(1, 0), "繁中與簡中的掃描摘要不同");
+  ok(tw.scanDone(1, 0) !== en.scanDone(1, 0), "繁中與英文的掃描摘要不同");
+  ok(cn.scanDone(1, 0) !== en.scanDone(1, 0), "簡中與英文的掃描摘要不同");
+  ok(tw.none !== cn.none && cn.none !== en.none, "「無」三語言各異");
+  ok(tw.helpText !== en.helpText, "指令說明中英不同");
+
+  // 簡中必須是真簡中
+  ok(cn.scanDone(1, 0).includes("扫描"), "簡中用「扫描」");
+  ok(tw.scanDone(1, 0).includes("掃描"), "繁中用「掃描」");
+
+  // 英文文案不得含中文
+  const hasCjk = /[\u4e00-\u9fff]/;
+  ok(!hasCjk.test(en.scanDone(1, 0)), "英文掃描摘要無中文字");
+  ok(!hasCjk.test(en.helpText), "英文指令說明無中文字");
+  ok(!hasCjk.test(en.botStarted), "英文啟動訊息無中文字");
+  ok(!hasCjk.test(en.dryRunNote), "英文演練提示無中文字");
+
+  // 英文介面文案也不得含預測性字眼
+  const forbiddenEn = ["signal", "entry", "stop loss", "take profit", "recommend", "reversal"];
+  for (const w of forbiddenEn) {
+    ok(!en.helpText.toLowerCase().includes(w), `英文指令說明不出現「${w}」`);
+    ok(!en.scanDone(1, 0).toLowerCase().includes(w), `英文掃描摘要不出現「${w}」`);
+  }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -82,6 +82,8 @@ export interface ScanResult {
   latestCandleTime: number;
   symbolCount: number;
   eligibleCount: number;
+  /** Language actually used, after env/user/config resolution. */
+  language: Language;
 }
 
 export interface ScanOptions {
@@ -395,5 +397,6 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
     latestCandleTime,
     symbolCount: symbols.length,
     eligibleCount,
+    language,
   };
 }
