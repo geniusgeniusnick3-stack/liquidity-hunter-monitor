@@ -1,0 +1,140 @@
+# Liquidity Hunter — configuration (REQUIREMENTS §25)
+#
+# Every operational threshold lives here, not in source code.
+# The filter values below are NOT arbitrary: they were calibrated against live
+# Binance USDT-M futures distributions measured on 2026-09-19 across all 528
+# trading USDT perpetuals. See the comment on each value for the measured
+# distribution it was derived from.
+#
+# Symbols below market floors are excluded; the survivors are then RANKED and
+# only the top `active_size` become the active watchlist (REQUIREMENTS §7).
+
+universe:
+  # How often the universe is recomputed.
+  refresh_hours: 6
+
+  # Core symbols are always monitored and are never removed for a temporary
+  # volume dip (REQUIREMENTS §5). Editable here.
+  core_symbols:
+    - BTCUSDT
+    - ETHUSDT
+    - SOLUSDT
+    - BNBUSDT
+    - XRPUSDT
+
+  # Target size of the active watchlist (configurable; 30–100 per §7).
+  active_size: 50
+
+  # Hysteresis (REQUIREMENTS §8): a symbol must reach `entry_rank` to join,
+  # but is only dropped once it falls past `removal_rank`. This stops
+  # rank-49 → 52 → 48 churn from causing add/remove thrash.
+  entry_rank: 50
+  removal_rank: 70
+
+  filters:
+    # Measured: P50 = 3.8M, P75 = 12.8M, P90 = 66.6M. 30M admits ~86 symbols
+    # — a real floor, not a token filter.
+    min_quote_volume_24h_usd: 30000000
+
+    # Guards against a one-day pump/news spike carrying a thin symbol into the
+    # watchlist (REQUIREMENTS §6.2). Computed from 7 daily candles, median not mean.
+    min_median_daily_volume_7d_usd: 20000000
+
+    # Measured: P50 = 3.4M, P90 = 24.8M. 5M admits ~187 symbols on its own.
+    min_open_interest_usd: 5000000
+
+    # Measured: P50 = 4.46 bps, P90 = 9.12 bps. 10 bps trims the illiquid tail.
+    max_spread_bps: 10
+
+    # Excludes freshly listed perpetuals without enough history for SMC
+    # structure to mean anything (REQUIREMENTS §6.5).
+    min_listing_age_days: 90
+
+# Timeframes monitored for alerts. Structure/data for other timeframes remains
+# available on demand; these drive the scanner (REQUIREMENTS §9).
+timeframes:
+  - 1h
+  - 4h
+
+# Event types that produce a Telegram alert (REQUIREMENTS §16). Individual
+# toggles so noise can be tuned without a code change. Liquidity first (§15).
+alerts:
+  approaching: true
+  sweep: true
+  order_block: false
+  fvg: false
+  bos: false
+  choch: false
+
+liquidity:
+  # Tolerance for deciding how a COMPLETED candle interacted with a liquidity
+  # level (SWEPT / BROKEN / TOUCHED), as a multiple of ATR.
+  #
+  # Never a fixed percentage: measured ATR(14, 4H) spans 1.10% of price (BTC)
+  # to 2.70% (SUI) across live majors — a 2.5x spread.
+  #
+  # Calibrated from a measured scan (8 majors, 139 detected levels):
+  #   0.00/0.02 → BROKEN 54 (no filtering)   0.05 → 50 (-7.4%)
+  #   0.10      → 48 (-11.1%)  ← default     0.20 → 50 (defers settlement)
+  #   0.50      → 38 (-29.6%, over-filtered)
+  tolerance_atr_multiple: 0.10
+
+  # How close two levels must be to count as the SAME price area.
+  # Used to recognise that an area was already handled weeks ago, so a newly
+  # formed pivot at almost the same price is not re-announced as a fresh target
+  # (REQUIREMENTS §11 — persistent liquidity levels).
+  #
+  # 0.2% keeps genuinely distinct nearby levels separate while collapsing the
+  # re-discovery case (observed: 0.33724 consumed 09/15, 0.33688 re-formed
+  # 09/19 — 0.1% apart, same area to a human).
+  region_tolerance_pct: 0.2
+
+  # How far back a previous consumption still counts as "this area was handled".
+  # Crypto structure turns over on a roughly weekly cycle, so a level handled
+  # more than a week ago is treated as stale history rather than an active
+  # reason to suppress a newly formed level.
+  region_lookback_days: 7
+
+alert_thresholds:
+  # Price within this % of a liquidity level starts an APPROACHING event (§15).
+  approaching_distance_pct: 0.5
+
+  # A level is considered consumed once price closes beyond it by this much
+  # (used to separate SWEPT from BROKEN — REQUIREMENTS §13).
+  broken_close_buffer_bps: 2
+
+  # Same event never re-alerts within this window (§17).
+  dedup_window_hours: 24
+
+  # Even a *new* event is rate-limited per symbol to avoid zone-chop spam (§18).
+  cooldown_minutes: 60
+
+telegram:
+  # Requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in the environment.
+  # Never commit tokens; see .env.example (REQUIREMENTS §14, §26).
+  #
+  # Find/verify your chat id with:
+  #   npx tsx artifacts/api-server/src/scripts/telegram-setup.ts
+  enabled: true
+  parse_mode: Markdown
+
+scanner:
+  # Minimum candles before the SMC engine is asked to analyse a timeframe.
+  min_candles_required: 50
+
+scanner_timeframes:
+  # Timeframes the live WebSocket subscribes to per symbol.
+  - 15m
+  - 1h
+  - 4h
+
+health:
+  # Market data older than this marks the system STALE_DATA (REQUIREMENTS §23).
+  stale_data_seconds: 300
+  # Emit a health heartbeat notification every N minutes (0 = off).
+  heartbeat_minutes: 0
+
+logging:
+  level: info
+  # Structured (JSON) logging — REQUIREMENTS §24.
+  structured: true
