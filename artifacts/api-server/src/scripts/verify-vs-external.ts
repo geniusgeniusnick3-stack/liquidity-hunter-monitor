@@ -16,7 +16,7 @@
  * ticks of basis does not.
  *
  * Usage:
- *   npx tsx artifacts/api-server/src/scripts/verify-vs-external.ts TRXUSDT 1h
+ *   npx tsx artifacts/api-server/src/scripts/verify-vs-external.ts BTCUSDT 1h
  */
 
 const BYBIT_REST = "https://api.bybit.com/v5/market/kline";
@@ -82,7 +82,7 @@ function taipei(sec: number): string {
 }
 
 (async () => {
-  const symbol = (process.argv[2] ?? "TRXUSDT").toUpperCase();
+  const symbol = (process.argv[2] ?? "BTCUSDT").toUpperCase();
   const tf = (process.argv[3] ?? "1h").toLowerCase();
 
   const { fetchKlines } = await import("../lib/market/futures.js");

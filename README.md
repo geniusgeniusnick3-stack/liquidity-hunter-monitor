@@ -2,6 +2,20 @@
 
 > **It scans when you ask.** No auto-trading, no unsolicited push, no account APIs.
 
+> ### 繁體中文說明 ｜ [完整中文版 README.zh-TW.md](README.zh-TW.md)
+>
+> 這是一套**被動式**的 SMC（Smart Money Concepts）流動性監控系統。
+> 你在 Telegram 下指令（例如 `/scan BTCUSDT`），它才掃描 Binance USDT-M 永續市場，
+> 回報值得人工查看的價位事件。
+>
+> **它只描述價格與流動性價位互動的客觀事實，不做方向預測。**
+> 最終的交易決策完全由使用者負責。
+>
+> - 不做自動交易、不下單、不管理部位
+> - 不主動推播（不是 24/7 一直吵你）
+> - **不需要交易所帳號 API**（只用公開市場資料）
+> - 基於開源專案 GdotAiM/SMC-Liquidity-Hunter（MIT），保留其分析引擎
+
 An SMC (Smart Money Concepts) liquidity monitor for the Binance USDT-M perpetual
 market, built on top of the open-source
 [`GdotAiM/SMC-Liquidity-Hunter`](https://github.com/GdotAiM/SMC-Liquidity-Hunter).
@@ -145,8 +159,8 @@ when asked, and replies to that one request.
 | Command | Effect |
 |---|---|
 | `/scan` | Scan the whole tracked universe |
-| `/scan TRXUSDT` | Scan one symbol |
-| `/scan TRXUSDT 1h` | Scan one symbol on one timeframe |
+| `/scan BTCUSDT` | Scan one symbol |
+| `/scan BTCUSDT 1h` | Scan one symbol on one timeframe |
 | `/events` | Show what is live now (no re-scan) |
 | `/status` | System state and configuration |
 | `/help` | Command list |
@@ -196,7 +210,7 @@ npx tsx artifacts/api-server/src/scripts/live-snapshot.ts
 npx tsx artifacts/api-server/src/scripts/live-snapshot.ts --send
 
 # Single symbol
-npx tsx artifacts/api-server/src/scripts/live-snapshot.ts --symbols TRXUSDT --timeframe 1h
+npx tsx artifacts/api-server/src/scripts/live-snapshot.ts --symbols BTCUSDT --timeframe 1h
 ```
 
 ### Tests
@@ -256,7 +270,7 @@ venues legitimately trade at a small basis. Basis scales inversely with
 liquidity (smallest on BTC, wider on thinner alts), matching market structure,
 with no outliers.
 
-Reproduce: `npx tsx artifacts/api-server/src/scripts/verify-vs-external.ts TRXUSDT 1h`
+Reproduce: `npx tsx artifacts/api-server/src/scripts/verify-vs-external.ts BTCUSDT 1h`
 
 ### 2. Independent recomputation of engine verdicts
 
@@ -277,7 +291,7 @@ implementation and compared against the engine.
 
 Agreement covers not just the state but **which candle produced it**, level by level.
 
-Reproduce: `npx tsx artifacts/api-server/src/scripts/verify-engine-manual.ts TRXUSDT 1h`
+Reproduce: `npx tsx artifacts/api-server/src/scripts/verify-engine-manual.ts BTCUSDT 1h`
 
 ### Why not TradingView
 

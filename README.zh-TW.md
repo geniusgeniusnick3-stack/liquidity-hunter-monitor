@@ -2,6 +2,8 @@
 
 > **你問，它才掃。** 不做自動交易，不做主動推播，不使用帳號 API。
 
+> **English version: [README.md](README.md)**
+
 一個 24/7 可用的 SMC（Smart Money Concepts）流動性監控系統，改造自開源專案
 [`GdotAiM/SMC-Liquidity-Hunter`](https://github.com/GdotAiM/SMC-Liquidity-Hunter)，
 把原本的單幣網頁儀表板，改造成**在 Telegram 上按需查詢**的全市場掃描器。
@@ -132,8 +134,8 @@
 | 指令 | 作用 |
 |---|---|
 | `/scan` | 掃描全部追蹤標的 |
-| `/scan TRXUSDT` | 只掃單一標的 |
-| `/scan TRXUSDT 1h` | 只掃單一標的的單一時框 |
+| `/scan BTCUSDT` | 只掃單一標的 |
+| `/scan BTCUSDT 1h` | 只掃單一標的的單一時框 |
 | `/events` | 檢視目前狀況（不重新掃描） |
 | `/status` | 系統狀態與設定值 |
 | `/help` | 指令說明 |
@@ -181,7 +183,7 @@ npx tsx artifacts/api-server/src/scripts/live-snapshot.ts
 npx tsx artifacts/api-server/src/scripts/live-snapshot.ts --send
 
 # 只掃單一標的
-npx tsx artifacts/api-server/src/scripts/live-snapshot.ts --symbols TRXUSDT --timeframe 1h
+npx tsx artifacts/api-server/src/scripts/live-snapshot.ts --symbols BTCUSDT --timeframe 1h
 ```
 
 ### 測試
@@ -238,7 +240,7 @@ alert_thresholds:
 比對的是**價差分布**而非要求完全相同——兩個交易所本來就有合理 basis。
 價差大小與流動性成反比（BTC 最小、冷門幣稍大），符合市場結構，無異常值。
 
-複現：`npx tsx artifacts/api-server/src/scripts/verify-vs-external.ts TRXUSDT 1h`
+複現：`npx tsx artifacts/api-server/src/scripts/verify-vs-external.ts BTCUSDT 1h`
 
 ### 二、引擎判定獨立重算
 
@@ -258,7 +260,7 @@ alert_thresholds:
 
 不只狀態一致，**連判定發生的那根 K 線時間也逐條相同**。
 
-複現：`npx tsx artifacts/api-server/src/scripts/verify-engine-manual.ts TRXUSDT 1h`
+複現：`npx tsx artifacts/api-server/src/scripts/verify-engine-manual.ts BTCUSDT 1h`
 
 ### 為什麼不是 TradingView
 

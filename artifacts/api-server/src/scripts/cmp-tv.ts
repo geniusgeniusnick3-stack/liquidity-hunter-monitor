@@ -10,7 +10,7 @@
 import { fetchKlines } from "../lib/market/futures.js";
 import { analyzeLiquidity } from "../lib/smc/liquidity.js";
 
-const symbol = (process.argv[2] ?? "TRXUSDT").toUpperCase();
+const symbol = (process.argv[2] ?? "BTCUSDT").toUpperCase();
 const tf = (process.argv[3] ?? "1h").toLowerCase();
 
 function taipei(seconds: number): string {

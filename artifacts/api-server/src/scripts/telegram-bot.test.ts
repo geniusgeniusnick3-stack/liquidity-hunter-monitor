@@ -21,10 +21,10 @@ function scanOf(text: string) {
 }
 
 ok(parseCommand("/scan").kind === "scan", "/scan → 掃描");
-ok(scanOf("/scan TRXUSDT")?.symbol === "TRXUSDT", "/scan TRXUSDT → 指定幣種");
-ok(scanOf("/scan trxusdt")?.symbol === "TRXUSDT", "幣種一律轉大寫");
-ok(scanOf("/scan TRXUSDT 1h")?.timeframe === "1h", "/scan 幣種 時框 → 指定時框");
-ok(scanOf("/scan@outsidetest_bot TRXUSDT")?.symbol === "TRXUSDT", "群組訊息帶 @bot 後綴仍可解析");
+ok(scanOf("/scan BTCUSDT")?.symbol === "BTCUSDT", "/scan BTCUSDT → 指定幣種");
+ok(scanOf("/scan btcusdt")?.symbol === "BTCUSDT", "幣種一律轉大寫");
+ok(scanOf("/scan BTCUSDT 1h")?.timeframe === "1h", "/scan 幣種 時框 → 指定時框");
+ok(scanOf("/scan@outsidetest_bot BTCUSDT")?.symbol === "BTCUSDT", "群組訊息帶 @bot 後綴仍可解析");
 ok(parseCommand("/events").kind === "events", "/events → 看現況");
 ok(parseCommand("/status").kind === "status", "/status → 系統狀態");
 ok(parseCommand("/help").kind === "help", "/help → 說明");

@@ -14,8 +14,8 @@ const cases: Array<[string, string]> = [
     currentPrice: 768.54, distancePct: 0.29, source: "1 次觸及｜london",
   })],
   ["SSL 接近", formatApproaching({
-    symbol: "TRXUSDT", timeframe: "1h", side: "SSL", level: 0.33688,
-    currentPrice: 0.33785, distancePct: 0.29, source: "2 次觸及｜london",
+    symbol: "BTCUSDT", timeframe: "1h", side: "SSL", level: 81181.8,
+    currentPrice: 81420.5, distancePct: 0.29, source: "2 次觸及｜london",
   })],
   ["BSL 掃過", formatSweep({
     symbol: "TAOUSDT", timeframe: "1h", side: "BSL",
@@ -26,12 +26,12 @@ const cases: Array<[string, string]> = [
     level: 0.18887, extreme: 0.19598, close: 0.19127, broken: true,
   })],
   ["SSL 掃過", formatSweep({
-    symbol: "TRXUSDT", timeframe: "4h", side: "SSL",
-    level: 0.33, extreme: 0.3288, close: 0.3321, broken: false,
+    symbol: "BTCUSDT", timeframe: "4h", side: "SSL",
+    level: 81000, extreme: 80780, close: 81210, broken: false,
   })],
   ["SSL 突破", formatSweep({
-    symbol: "TRXUSDT", timeframe: "4h", side: "SSL",
-    level: 0.33, extreme: 0.3288, close: 0.3295, broken: true,
+    symbol: "BTCUSDT", timeframe: "4h", side: "SSL",
+    level: 81000, extreme: 80780, close: 80895, broken: true,
   })],
   ["結構事件", formatStructure({
     symbol: "BTCUSDT", timeframe: "1h", kind: "CHoCH", direction: "bearish",

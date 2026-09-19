@@ -48,8 +48,8 @@ export function parseCommand(raw: string): Command {
 export const HELP = `【流動性獵人 — 指令】
 
 /scan — 掃描全部（目前追蹤的幣）
-/scan TRXUSDT — 只掃這個幣
-/scan TRXUSDT 1h — 只掃這個幣的這個時框
+/scan BTCUSDT — 只掃這個幣
+/scan BTCUSDT 1h — 只掃這個幣的這個時框
 /events — 看現在有什麼（不重新掃描）
 /status — 系統狀態
 /help — 這個說明

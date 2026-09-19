@@ -8,8 +8,8 @@
  *
  * Usage in Telegram:
  *   /scan                 → scan the whole active universe
- *   /scan TRXUSDT         → scan one symbol, all timeframes
- *   /scan TRXUSDT 1h      → scan one symbol, one timeframe
+ *   /scan BTCUSDT         → scan one symbol, all timeframes
+ *   /scan BTCUSDT 1h      → scan one symbol, one timeframe
  *   /events               → what is currently live (no re-scan)
  *   /status               → ledger + last scan info
  *   /help                 → command list

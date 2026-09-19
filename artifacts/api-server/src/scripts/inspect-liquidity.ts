@@ -5,14 +5,14 @@
  * guessing: it lists every detected pool with its price, formation time, current
  * interaction state, WHICH candle produced that state, and the tolerance used.
  *
- * Run: NODE_ENV=production npx tsx artifacts/api-server/src/scripts/inspect-liquidity.ts TRXUSDT 1h
+ * Run: NODE_ENV=production npx tsx artifacts/api-server/src/scripts/inspect-liquidity.ts BTCUSDT 1h
  */
 import { fetchKlines } from "../lib/market/futures.js";
 import { analyzeLiquidity } from "../lib/smc/liquidity.js";
 import { SMC_CONFIG } from "../lib/smc/config.js";
 import { calcATR } from "../lib/smc/atr.js";
 
-const symbol = (process.argv[2] ?? "TRXUSDT").toUpperCase();
+const symbol = (process.argv[2] ?? "BTCUSDT").toUpperCase();
 const timeframe = process.argv[3] ?? "1h";
 
 function fmt(seconds: number): string {

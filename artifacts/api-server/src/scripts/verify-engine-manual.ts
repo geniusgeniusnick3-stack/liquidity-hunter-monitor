@@ -14,14 +14,14 @@
  *   - BROKEN = traded beyond, and that candle closed beyond
  *
  * Usage:
- *   npx tsx artifacts/api-server/src/scripts/verify-engine-manual.ts TRXUSDT 1h
+ *   npx tsx artifacts/api-server/src/scripts/verify-engine-manual.ts BTCUSDT 1h
  */
 
 import { fetchKlines } from "../lib/market/futures.js";
 import { analyzeLiquidity } from "../lib/smc/liquidity.js";
 import { loadConfig } from "../lib/config/index.js";
 
-const symbol = (process.argv[2] ?? "TRXUSDT").toUpperCase();
+const symbol = (process.argv[2] ?? "BTCUSDT").toUpperCase();
 const tf = (process.argv[3] ?? "1h").toLowerCase();
 
 function taipei(sec: number): string {
