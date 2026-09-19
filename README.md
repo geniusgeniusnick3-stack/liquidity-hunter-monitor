@@ -42,6 +42,89 @@ responsibility. See [Non-Goals](#non-goals).
 
 ---
 
+## Two monitoring modes (user's choice)
+
+The system supports two operating modes that share **exactly one SMC analysis
+engine**.
+
+| | **PASSIVE (default)** | **ACTIVE (optional)** |
+|---|---|---|
+| In a sentence | "Tell me when I ask." | "Monitor for me and tell me when something happens." |
+| Trigger | Your command | Background timer |
+| Alerts | Replies to your query only | Proactive, on state transitions |
+| Idle cost | **Zero** — no scanning, no requests | Acts only when a candle closes |
+| Default | ✅ Yes | Must be enabled explicitly |
+
+**ACTIVE is never enabled silently.** An untouched config is always PASSIVE, and
+running the ACTIVE monitor while PASSIVE is selected is refused.
+
+```yaml
+monitoring:
+  mode: passive        # passive | active
+  active_poll_seconds: 60   # ACTIVE only
+  active_batch_size: 12     # ACTIVE only
+```
+
+Or override without editing the file:
+
+```bash
+MONITORING_MODE=active npx tsx artifacts/api-server/src/scripts/monitor-loop.ts
+```
+
+`/mode` on Telegram reports the current mode.
+
+### Why ACTIVE does not hammer the API
+
+| Mechanism | Effect |
+|---|---|
+| **Candle-close driven** | Wakes every poll but only compares clocks. No new close → **zero requests** |
+| **Candle cache** | Re-checking within a candle period does not re-download history |
+| **Separated cadences** | Universe refresh (6h) is decoupled from market polling |
+| **Bounded concurrency** | Work is spread, never fired as one burst of hundreds of calls |
+
+### Shared engine (architectural guarantee)
+
+```
+market data → dynamic universe → shared SMC engine → shared event classification
+                                        ↓
+                            ┌───────────┴───────────┐
+                        PASSIVE                   ACTIVE
+                     user query              background monitor
+                            └───────────┬───────────┘
+                                        ↓
+                                    Telegram
+```
+
+The ONLY difference between the modes is what triggers an analysis and whether
+alerts are pushed. Market interpretation is identical — and that is enforced by
+a runnable check, not by convention (see Verification below).
+
+---
+
+## Alert language
+
+| Code | Language |
+|---|---|
+| `zh-TW` | Traditional Chinese (default) |
+| `zh-CN` | Simplified Chinese |
+| `en` | English |
+
+```yaml
+notifications:
+  language: zh-TW
+```
+
+Environment override (common aliases such as `zh_Hant`, `cn`, `en-US` accepted):
+
+```bash
+NOTIFICATION_LANGUAGE=en npx tsx artifacts/api-server/src/scripts/live-snapshot.ts --send
+```
+
+ICT abbreviations (BSL / SSL / SWEPT / BROKEN) stay in English in every language
+so they line up with TradingView and course material.
+
+---
+
 ## Relationship to the upstream project
 
 This project builds on **[Ntloso Ngubeni](https://github.com/GdotAiM)'s
@@ -55,7 +138,7 @@ selection, event lifecycle, persistence and a query interface around it.
 
 | | Upstream | This project |
 |---|---|---|
-| Purpose | Single-symbol web dashboard | Market-wide on-demand query |
+| Purpose | Single-symbol web dashboard | Market-wide monitor (passive or active) |
 | Data source | Binance US spot + Yahoo Finance fallback | Binance global USDT-M perpetuals |
 | Symbol list | Hard-coded in source | Derived from liquidity metrics |
 | Liquidity state | `wasSwept: true / false` | Seven states + ATR tolerance |
@@ -292,6 +375,30 @@ implementation and compared against the engine.
 Agreement covers not just the state but **which candle produced it**, level by level.
 
 Reproduce: `npx tsx artifacts/api-server/src/scripts/verify-engine-manual.ts BTCUSDT 1h`
+
+### 3. Mode parity (PASSIVE ≡ ACTIVE)
+
+The architecture requires both modes to share one engine. That is enforced by a
+runnable check rather than by convention:
+
+| Layer | What is checked | Result |
+|---|---|---|
+| **Static** | Neither entry point may import the SMC engine or universe logic | ✅ Both only call the shared `runScan()` |
+| **Behavioural** | For identical input, both paths must produce identical verdicts | ✅ 4 verdicts match exactly |
+| **Safety** | Starting ACTIVE while PASSIVE is selected must be refused | ✅ Refused, monitor does not start |
+
+Actual behavioural output (PASSIVE vs ACTIVE, character-for-character identical):
+
+```
+⊘ DOGEUSDT 1H SSL 0.07828 — same area 0.07842 SWEPT
+⊘ TRXUSDT 1H SSL 0.33325 — same area 0.33317 BROKEN
+⊘ TRXUSDT 1H SSL 0.33688 — same area 0.33724 SWEPT
+⊘ XLMUSDT 1H SSL 0.17225 — same area 0.17253 SWEPT
+```
+
+Reproduce: `npx tsx artifacts/api-server/src/scripts/verify-mode-parity.ts`
+
+---
 
 ### Why not TradingView
 

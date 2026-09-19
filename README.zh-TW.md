@@ -26,6 +26,87 @@
 
 ---
 
+## 兩種監控模式（使用者自行選擇）
+
+系統支援兩種運作模式，**共用完全相同的一套 SMC 分析引擎**。
+
+| | **PASSIVE（預設）** | **ACTIVE（選用）** |
+|---|---|---|
+| 比喻 | 「我問的時候告訴我」 | 「幫我盯著，有事告訴我」 |
+| 觸發方式 | 你下指令才掃描 | 背景持續監控 |
+| 通知 | 只回覆你的查詢 | 事件發生時主動通知 |
+| 閒置成本 | **零**（不掃描、不打 API） | 每根 K 線收盤才動作 |
+| 預設 | ✅ 是 | 需明確開啟 |
+
+**ACTIVE 不會被悄悄啟動。** 設定沒改就永遠是 PASSIVE；在 PASSIVE 狀態下執行 ACTIVE 的監控程式會被拒絕。
+
+設定方式（`config.yaml`）：
+
+```yaml
+monitoring:
+  mode: passive        # passive | active
+  active_poll_seconds: 60   # ACTIVE 專用：多久醒來檢查一次
+  active_batch_size: 12     # ACTIVE 專用：每輪處理幾個幣
+```
+
+或不需要改檔案，用環境變數覆寫：
+
+```bash
+MONITORING_MODE=active npx tsx artifacts/api-server/src/scripts/monitor-loop.ts
+```
+
+在 Telegram 用 `/mode` 可查詢目前模式。
+
+### 為什麼 ACTIVE 不會拖垮 API
+
+| 機制 | 說明 |
+|---|---|
+| **K 線收盤才掃描** | 每分鐘醒來，但只做時間比對。沒有新收盤的 K 線 → **零請求** |
+| **K 線快取** | 同一根 K 線期間重複檢查不會重新下載歷史 |
+| **快慢分離** | 清單更新（6 小時）與行情監控節奏分開，不互相牽動 |
+| **併發上限** | 逐批處理，避免一次打出上百個請求 |
+
+### 共用引擎（架構保證）
+
+```
+市場資料 → 動態選幣 → 共用的 SMC 引擎 → 共用的事件分類
+                                          ↓
+                              ┌───────────┴───────────┐
+                          PASSIVE                  ACTIVE
+                         使用者查詢              背景監控
+                              └───────────┬───────────┘
+                                          ↓
+                                      Telegram
+```
+
+兩種模式**唯一差別**是「什麼觸發分析」與「是否主動發送」。
+底層的市場判讀**完全一致**——而且這件事有可執行的驗收在把關（見下方）。
+
+---
+
+## 通知語言（三選一）
+
+| 代碼 | 語言 |
+|---|---|
+| `zh-TW` | 繁體中文（預設） |
+| `zh-CN` | 簡體中文 |
+| `en` | 英文 |
+
+```yaml
+notifications:
+  language: zh-TW
+```
+
+環境變數覆寫（接受常見別名如 `zh_Hant`、`cn`、`en-US`）：
+
+```bash
+NOTIFICATION_LANGUAGE=zh-CN npx tsx artifacts/api-server/src/scripts/live-snapshot.ts --send
+```
+
+ICT 縮寫（BSL／SSL／SWEPT／BROKEN）**在所有語言都保留英文**，方便對照 TradingView 與教材。
+
+---
+
 ## 與上游專案的關係（血緣聲明）
 
 本專案基於 **[Ntloso Ngubeni](https://github.com/GdotAiM) 的
@@ -37,7 +118,7 @@
 
 | | 上游 | 本專案 |
 |---|---|---|
-| 用途 | 單一幣種的網頁分析儀表板 | 跨全市場的被動式查詢 |
+| 用途 | 單一幣種的網頁分析儀表板 | 跨全市場監控（被動查詢／主動監控） |
 | 資料源 | Binance US 現貨 + Yahoo Finance fallback | Binance 全球 USDT-M 永續 |
 | 標的清單 | 程式碼中硬編碼 | 依流動性指標自動產生 |
 | 流動性狀態 | `wasSwept: true / false` | 七種狀態 + ATR 容忍度 |
@@ -261,6 +342,29 @@ alert_thresholds:
 不只狀態一致，**連判定發生的那根 K 線時間也逐條相同**。
 
 複現：`npx tsx artifacts/api-server/src/scripts/verify-engine-manual.ts BTCUSDT 1h`
+
+### 三、模式一致性驗收（PASSIVE ≡ ACTIVE）
+
+架構上要求兩種模式共用同一套引擎。這不是靠自律，而是靠一支可執行的檢查把關：
+
+| 層次 | 檢查內容 | 結果 |
+|---|---|---|
+| **靜態** | 兩個入口檔都不得直接引用 SMC 引擎或選幣邏輯 | ✅ 都只呼叫共用的 `runScan()` |
+| **行為** | 相同輸入下，兩條路徑的判定必須逐字相同 | ✅ 4 筆判定完全一致 |
+| **安全** | PASSIVE 模式下啟動 ACTIVE 監控必須被拒絕 | ✅ 拒絕且不會開始監控 |
+
+行為比對的實際輸出（左為 PASSIVE、右為 ACTIVE，內容逐字相同）：
+
+```
+⊘ DOGEUSDT 1H SSL 0.07828 — 同區域 0.07842 已於 2026/09/17 01:00 SWEPT
+⊘ TRXUSDT 1H SSL 0.33325 — 同區域 0.33317 已於 2026/09/16 02:00 BROKEN
+⊘ TRXUSDT 1H SSL 0.33688 — 同區域 0.33724 已於 2026/09/15 08:00 SWEPT
+⊘ XLMUSDT 1H SSL 0.17225 — 同區域 0.17253 已於 2026/09/17 01:00 SWEPT
+```
+
+複現：`npx tsx artifacts/api-server/src/scripts/verify-mode-parity.ts`
+
+---
 
 ### 為什麼不是 TradingView
 
