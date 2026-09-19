@@ -1,5 +1,8 @@
-import type { Candle, LiquidityPool, LiquidityResult } from "./types.js";
+import type {
+  Candle, LiquidityPool, LiquidityResult, LiquidityInteraction, LiquidityInteractionCandle,
+} from "./types.js";
 import { SMC_CONFIG } from "./config.js";
+import { calcATR } from "./atr.js";
 
 function getSession(timestamp: number): string {
   const hour = new Date(timestamp * 1000).getUTCHours();
@@ -19,13 +22,66 @@ function recencyDecay(index: number, totalBars: number, halfLife: number): numbe
   return Math.exp(-Math.LN2 * barsAgo / halfLife);
 }
 
-function wasSwept(pool: { price: number; type: string }, candle: Candle): boolean {
-  if (pool.type === "BSL" || pool.type === "EQH") return candle.close > pool.price;
-  return candle.close < pool.price;
-}
+// ── Interaction classification (REQUIREMENTS: descriptive, not predictive) ──
 
 /**
- * Estimate the probability (0–1) that an unswept pool will be swept soon.
+ * Classify how ONE COMPLETED candle interacted with a liquidity level.
+ *
+ * This function answers exactly one question — "what did price do?" — and
+ * deliberately answers nothing else:
+ *
+ *   SWEPT   price traded beyond the level, the completed candle closed back on
+ *           the original side.
+ *   BROKEN  price traded beyond the level, the completed candle closed beyond
+ *           it (acceptance).
+ *   TOUCHED price reached the zone but did not trade beyond it.
+ *   NONE    price never reached the zone.
+ *
+ * It does NOT say "reversal", "continuation", "fake breakout", "confirmed", or
+ * anything else about what happens next. Those readings require structure
+ * analysis (MSS, displacement, BOS/CHoCH) that belongs to the human trader.
+ *
+ * `tolerance` is a volatility-scaled buffer (ATR multiple), not a fixed
+ * percentage, so that a close a hair past the level does not register as
+ * acceptance. Pass 0 for an exact comparison.
+ *
+ * NOTE: this function must only ever be handed CLOSED candles. Callers are
+ * responsible for excluding the forming candle — an unfinished bar's "close" is
+ * just the current price and would produce a state that then has to be undone.
+ */
+export function classifyLiquidityInteraction(
+  level: number,
+  isBuySide: boolean,
+  candle: Candle,
+  tolerance: number,
+): LiquidityInteraction {
+  if (isBuySide) {
+    const tradedBeyond = candle.high > level + tolerance;
+    const closedBeyond = candle.close > level + tolerance;
+    if (tradedBeyond && closedBeyond) return "BROKEN";
+    if (tradedBeyond) return "SWEPT";
+    if (candle.high >= level - tolerance) return "TOUCHED";
+    return "NONE";
+  }
+
+  // Sell-side liquidity — mirror image.
+  const tradedBeyond = candle.low < level - tolerance;
+  const closedBeyond = candle.close < level - tolerance;
+  if (tradedBeyond && closedBeyond) return "BROKEN";
+  if (tradedBeyond) return "SWEPT";
+  if (candle.low <= level + tolerance) return "TOUCHED";
+  return "NONE";
+}
+
+/** True once the level has been consumed (taken off the board as a target). */
+function isConsumed(interaction: LiquidityInteraction): boolean {
+  return interaction === "SWEPT" || interaction === "BROKEN";
+}
+
+// ── Probability of a future sweep ───────────────────────────────────────────
+
+/**
+ * Estimate the probability (0–1) that an untaken pool will be reached soon.
  *
  * Factors:
  *  - Distance from current price (exponential decay — closer = much more likely)
@@ -56,13 +112,22 @@ function estimateProbabilityOfSweep(
   ));
 }
 
+// ── Analyzer ────────────────────────────────────────────────────────────────
+
 export function analyzeLiquidity(candles: Candle[], timeframe: string, market: string): LiquidityResult {
   const n          = candles.length;
   const halfLife   = SMC_CONFIG.liquidityHalfLifeBars[timeframe] ?? 200;
-  const threshold  = SMC_CONFIG.equalLevelThreshold;
   const pools: LiquidityPool[] = [];
 
-  const currentPrice = candles[n - 1].close;
+  // Volatility-scaled tolerance. Every level is compared against the ATR of the
+  // candle doing the comparing, so a quiet market needs a smaller move to count
+  // as "traded beyond" than a violent one.
+  const atrPeriod  = SMC_CONFIG.atrPeriodPerTf[timeframe] ?? SMC_CONFIG.atrPeriod;
+  const atr        = calcATR(candles, atrPeriod);
+  const tolMultiple = SMC_CONFIG.liquidityToleranceAtrMultiple;
+  const toleranceAt = (k: number): number => Math.max((atr[k] ?? 0) * tolMultiple, 0);
+
+  const currentPrice = candles[n - 1]?.close ?? 0;
   const windowSize   = Math.min(20, Math.floor(n / 4));
 
   for (let i = windowSize; i < n - 1; i++) {
@@ -78,61 +143,82 @@ export function analyzeLiquidity(candles: Candle[], timeframe: string, market: s
       if (candles[j].low  <= lo) isLocalLow  = false;
     }
 
-    if (isLocalHigh) {
-      const session = getSession(candles[i].time);
-      const sessW   = getSessionWeight(session);
-      const decay   = recencyDecay(i, n, halfLife);
+    const buildPool = (
+      price: number,
+      type: "BSL" | "SSL",
+    ): LiquidityPool => {
+      const isBuySide = type === "BSL";
+      const session   = getSession(candles[i].time);
+      const sessW     = getSessionWeight(session);
+      const decay     = recencyDecay(i, n, halfLife);
 
-      let touches  = 1;
-      let sweptIdx: number | null = null;
+      let touches   = 1;
+      let interaction: LiquidityInteraction = "NONE";
+      let interactionIdx: number | null = null;
+
+      // Walk forward through COMPLETED candles only (the loop stops at n-1, and
+      // callers must not append the forming candle — see classifyLiquidityInteraction).
       for (let k = i + 1; k < n; k++) {
-        if (Math.abs(candles[k].high - hi) / hi < threshold * 5) touches++;
-        if (wasSwept({ price: hi, type: "BSL" }, candles[k])) { sweptIdx = k; break; }
+        const tol = toleranceAt(k);
+        const state = classifyLiquidityInteraction(price, isBuySide, candles[k], tol);
+
+        // Touches are counted with the same tolerance so the notion of "reached
+        // this level" is consistent with the classification above.
+        if (state !== "NONE") touches++;
+
+        // The FIRST time price trades beyond the level settles it: the level has
+        // been taken and later candles cannot un-take it.
+        if (isConsumed(state)) {
+          interaction = state;
+          interactionIdx = k;
+          break;
+        }
+        // Remember contact, but keep looking for a genuine take.
+        if (state === "TOUCHED" && interaction === "NONE") {
+          interaction = "TOUCHED";
+          interactionIdx = k;
+        }
       }
 
-      const displaced         = sweptIdx !== null;
-      const displacementFactor = displaced ? 1.5 : 1.0;
-      const score             = touches * decay * sessW * displacementFactor;
-      const probabilityOfSweep = displaced
-        ? 0                // already swept — not a future target
-        : estimateProbabilityOfSweep(hi, currentPrice, touches, sessW, decay);
+      const consumed = isConsumed(interaction);
+      // Display convention only: a level taken very recently is still "fresh"
+      // in the narrative sense. (Was previously matched against the old, wrong
+      // `wasSwept` meaning; now tracks genuine consumption.)
+      const displacementFactor = consumed ? 1.5 : 1.0;
+      const score = touches * decay * sessW * displacementFactor;
 
-      pools.push({
-        price: hi, type: "BSL", score, touches,
-        wasSwept: displaced,
-        sweptAt: sweptIdx !== null ? candles[sweptIdx].time : null,
-        time: candles[i].time, index: i, session,
-        probabilityOfSweep,
-      });
-    }
+      const interactionCandle: LiquidityInteractionCandle | null =
+        interactionIdx !== null
+          ? {
+              time: candles[interactionIdx].time,
+              high: candles[interactionIdx].high,
+              low: candles[interactionIdx].low,
+              close: candles[interactionIdx].close,
+            }
+          : null;
 
-    if (isLocalLow) {
-      const session = getSession(candles[i].time);
-      const sessW   = getSessionWeight(session);
-      const decay   = recencyDecay(i, n, halfLife);
+      return {
+        price,
+        type,
+        score,
+        touches,
+        wasSwept: consumed,
+        sweptAt: consumed && interactionIdx !== null ? candles[interactionIdx].time : null,
+        time: candles[i].time,
+        index: i,
+        session,
+        probabilityOfSweep: consumed
+          ? 0                                   // already taken — not a future target
+          : estimateProbabilityOfSweep(price, currentPrice, touches, sessW, decay),
+        interaction,
+        interactionAt: interactionIdx !== null ? candles[interactionIdx].time : null,
+        interactionCandle,
+        tolerance: interactionIdx !== null ? toleranceAt(interactionIdx) : null,
+      };
+    };
 
-      let touches  = 1;
-      let sweptIdx: number | null = null;
-      for (let k = i + 1; k < n; k++) {
-        if (Math.abs(candles[k].low - lo) / lo < threshold * 5) touches++;
-        if (wasSwept({ price: lo, type: "SSL" }, candles[k])) { sweptIdx = k; break; }
-      }
-
-      const displaced         = sweptIdx !== null;
-      const displacementFactor = displaced ? 1.5 : 1.0;
-      const score             = touches * decay * sessW * displacementFactor;
-      const probabilityOfSweep = displaced
-        ? 0
-        : estimateProbabilityOfSweep(lo, currentPrice, touches, sessW, decay);
-
-      pools.push({
-        price: lo, type: "SSL", score, touches,
-        wasSwept: displaced,
-        sweptAt: sweptIdx !== null ? candles[sweptIdx].time : null,
-        time: candles[i].time, index: i, session,
-        probabilityOfSweep,
-      });
-    }
+    if (isLocalHigh) pools.push(buildPool(hi, "BSL"));
+    if (isLocalLow)  pools.push(buildPool(lo, "SSL"));
   }
 
   const sortedByScore = [...pools].sort((a, b) => b.score - a.score);

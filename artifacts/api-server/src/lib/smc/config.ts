@@ -67,4 +67,28 @@ export const SMC_CONFIG = {
   obLookForward: 3,
   maxCandles: 500,
   maxDailyCandles: 120,
+
+  /*
+   * Tolerance used when deciding how a COMPLETED candle interacted with a
+   * liquidity level (SWEPT / BROKEN / TOUCHED), expressed as a multiple of ATR.
+   *
+   * Deliberately volatility-scaled rather than a fixed percentage: a 0.1% band
+   * is enormous for BTC and noise-level for a small-cap perp. The engine already
+   * scales pivot noise and impulse detection by ATR*0.5 (see structure.ts and
+   * order-blocks.ts), so this follows the established convention.
+   *
+   * See liquidity.ts classifyLiquidityInteraction(). Overridable per run via
+   * config.yaml → liquidity.tolerance_atr_multiple.
+   *
+   * CALIBRATED, not guessed. Measured ATR(14, 4H) ranges from 1.10% of price
+   * (BTC) to 2.70% (SUI) across live majors — a 2.5x spread, which is why a
+   * fixed percentage cannot work. A scan over 8 majors / 139 detected levels
+   * (scripts/calibrate-liquidity-tolerance.ts) gave:
+   *    0.00 / 0.02 → BROKEN 54   (no filtering — hair-past-the-level counts)
+   *    0.05        → BROKEN 50   (-7.4%)
+   *    0.10        → BROKEN 48   (-11.1%)  ← filtered most without eating real breaks
+   *    0.20        → BROKEN 50   (starts deferring settlement to later candles)
+   *    0.50        → BROKEN 38   (-29.6%, over-filtered)
+   */
+  liquidityToleranceAtrMultiple: 0.10,
 };

@@ -37,11 +37,41 @@ export interface StructureResult {
   evidence: string[];
 }
 
+/**
+ * How a COMPLETED candle interacted with a liquidity level.
+ *
+ * Purely DESCRIPTIVE. These states record what price did; they assert nothing
+ * about what happens next. In particular:
+ *
+ *   SWEPT  — price traded beyond the level and the completed candle closed back
+ *            on the original side. NOT a reversal signal, NOT a fake breakout.
+ *   BROKEN — price traded beyond the level and the completed candle closed
+ *            beyond it (acceptance). NOT a continuation signal.
+ *
+ * Any directional reading requires the human trader to bring their own
+ * structure analysis (MSS, displacement, BOS/CHoCH).
+ */
+export type LiquidityInteraction = "NONE" | "TOUCHED" | "SWEPT" | "BROKEN";
+
+/** The completed candle that produced an interaction — kept for auditability. */
+export interface LiquidityInteractionCandle {
+  time: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
 export interface LiquidityPool {
   price: number;
   type: "BSL" | "SSL" | "EQH" | "EQL";
   score: number;
   touches: number;
+  /**
+   * True once the level has been CONSUMED — i.e. interaction is SWEPT or
+   * BROKEN. Retained under its original name for compatibility with report.ts,
+   * but note it now means "taken", not "closed through" (the old meaning was
+   * the opposite of the correct SWEPT definition).
+   */
   wasSwept: boolean;
   sweptAt: number | null;
   time: number;
@@ -49,6 +79,15 @@ export interface LiquidityPool {
   session: string | null;
   /** 0–1 probability this pool will be swept in the near future */
   probabilityOfSweep: number;
+
+  /** Descriptive interaction state of this level. */
+  interaction: LiquidityInteraction;
+  /** Time (seconds) of the completed candle that produced `interaction`. */
+  interactionAt: number | null;
+  /** OHLC of that candle, so downstream code can explain the classification. */
+  interactionCandle: LiquidityInteractionCandle | null;
+  /** Volatility-scaled tolerance used at classification time (auditability). */
+  tolerance: number | null;
 }
 
 export interface LiquidityResult {
