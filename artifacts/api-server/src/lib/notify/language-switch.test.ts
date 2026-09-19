@@ -47,7 +47,11 @@ console.log("優先序：環境變數 > 使用者設定 > config");
   const store = fakeStore(null);
 
   const a = resolveLanguage("zh-TW", store.read);
-  ok(a.language === "zh-TW" && a.source === "config", "沒人設定時 → 用 config 預設");
+  ok(a.language === "zh-TW" && a.source === "config",
+    "沒人設定時 → 採用 config.yaml 的值（此處傳入 zh-TW）");
+  // 同一條路徑傳入別的 config 值也必須被採用，證明它讀的是設定而非寫死某個語言
+  ok(resolveLanguage("en", store.read).language === "en",
+    "config 為 en 時 → 採用 en（不是寫死）");
 
   store.write("en");
   const b = resolveLanguage("zh-TW", store.read);

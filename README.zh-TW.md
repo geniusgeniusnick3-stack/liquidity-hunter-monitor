@@ -88,13 +88,15 @@ MONITORING_MODE=active npx tsx artifacts/api-server/src/scripts/monitor-loop.ts
 
 | 代碼 | 語言 |
 |---|---|
-| `zh-TW` | 繁體中文（預設） |
+| `en` | 英文（**預設**） |
+| `zh-TW` | 繁體中文 |
 | `zh-CN` | 簡體中文 |
-| `en` | 英文 |
+
+**預設是英文**——這是公開專案，主要讀者為國際使用者。要改成中文，改設定或直接用 Telegram 指令。
 
 ```yaml
 notifications:
-  language: zh-TW
+  language: en       # 改為 zh-TW 或 zh-CN
 ```
 
 環境變數覆寫（接受常見別名如 `zh_Hant`、`cn`、`en-US`）：
@@ -111,7 +113,7 @@ ICT 縮寫（BSL／SSL／SWEPT／BROKEN）**在所有語言都保留英文**，�
 |---|---|---|
 | 1（最高） | 環境變數 `NOTIFICATION_LANGUAGE` | 部署層級，管理者指定 |
 | 2 | Telegram 指令 `/language zh-CN` | 使用者即時切換，**不需重啟** |
-| 3 | `config.yaml` 的 `notifications.language` | 安裝預設值 |
+| 3 | `config.yaml` 的 `notifications.language` | 安裝預設值（出廠為 `en` 英文） |
 
 使用者用指令切換時，設定會存入本機資料庫（不是改 config.yaml——那個檔案在容器裡可能是唯讀的，而且改寫會破壞你的註解）。
 

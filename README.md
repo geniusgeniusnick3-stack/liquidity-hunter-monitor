@@ -105,13 +105,16 @@ a runnable check, not by convention (see Verification below).
 
 | Code | Language |
 |---|---|
-| `zh-TW` | Traditional Chinese (default) |
+| `en` | English (**default**) |
+| `zh-TW` | Traditional Chinese |
 | `zh-CN` | Simplified Chinese |
-| `en` | English |
+
+**The default is English** — this is a public repository with an international
+audience. Switch via config or the Telegram command if you prefer otherwise.
 
 ```yaml
 notifications:
-  language: zh-TW
+  language: en       # or zh-TW / zh-CN
 ```
 
 Environment override (common aliases such as `zh_Hant`, `cn`, `en-US` accepted):
@@ -129,7 +132,7 @@ so they line up with TradingView and course material.
 |---|---|---|
 | 1 (highest) | `NOTIFICATION_LANGUAGE` env var | Deployment-level, set by an operator |
 | 2 | Telegram `/language zh-CN` | User switches at runtime, **no restart needed** |
-| 3 | `notifications.language` in `config.yaml` | Installed default |
+| 3 | `notifications.language` in `config.yaml` | Installed default (`en`) |
 
 A switch made by command is stored in the local database rather than written back
 to config.yaml — that file may be read-only in a container, and rewriting it would

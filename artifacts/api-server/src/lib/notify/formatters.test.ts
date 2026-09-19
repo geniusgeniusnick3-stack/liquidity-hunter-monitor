@@ -1,16 +1,34 @@
 /**
- * Tests for alert message formatting — 中文版 (REQUIREMENTS §15, §27).
+ * Tests for alert message formatting — Traditional Chinese vocabulary
+ * (REQUIREMENTS §15, §27).
  *
  * Run: npx tsx artifacts/api-server/src/lib/notify/formatters.test.ts
+ *
+ * These assert Chinese wording, so every call names the language explicitly
+ * instead of relying on the default. When the shipped default changed from
+ * zh-TW to en, tests that omitted the argument silently started checking
+ * English output against Chinese expectations — 36 failures that said nothing
+ * about the code and everything about the tests. Naming the language removes
+ * that coupling.
  */
 import {
-  formatApproaching,
-  formatSweep,
-  formatStructure,
-  formatHealthHeartbeat,
+  formatApproaching as formatApproachingRaw,
+  formatSweep as formatSweepRaw,
+  formatStructure as formatStructureRaw,
+  formatHealthHeartbeat as formatHealthHeartbeatRaw,
   type ApproachingAlert,
   type SweepAlert,
+  type StructureAlert,
+  type HealthHeartbeatAlert,
 } from "./formatters.js";
+
+/** Language under test — this file verifies Chinese wording. */
+const ZH = "zh-TW" as const;
+
+const formatApproaching = (i: ApproachingAlert) => formatApproachingRaw(i, ZH);
+const formatSweep = (i: SweepAlert) => formatSweepRaw(i, ZH);
+const formatStructure = (i: StructureAlert) => formatStructureRaw(i, ZH);
+const formatHealthHeartbeat = (i: HealthHeartbeatAlert) => formatHealthHeartbeatRaw(i, ZH);
 
 let passed = 0;
 let failed = 0;

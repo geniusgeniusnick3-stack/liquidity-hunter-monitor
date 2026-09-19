@@ -12,8 +12,16 @@
 
 export type Language = "zh-TW" | "zh-CN" | "en";
 
-export const SUPPORTED_LANGUAGES: readonly Language[] = ["zh-TW", "zh-CN", "en"] as const;
-export const DEFAULT_LANGUAGE: Language = "zh-TW";
+/** Languages the system can render, in display order (default first). */
+export const SUPPORTED_LANGUAGES: readonly Language[] = ["en", "zh-TW", "zh-CN"] as const;
+/**
+ * Fallback when a stored or configured value cannot be understood.
+ *
+ * English rather than Chinese: this repository is public and the default
+ * audience is international. A user who configured something still gets their
+ * choice — this only decides what happens when a value is unreadable.
+ */
+export const DEFAULT_LANGUAGE: Language = "en";
 
 export function isSupportedLanguage(value: string): value is Language {
   return (SUPPORTED_LANGUAGES as readonly string[]).includes(value);

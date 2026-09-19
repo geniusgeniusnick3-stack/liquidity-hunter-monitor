@@ -54,13 +54,16 @@ monitoring:
 # SWEPT, BROKEN) stay in English in every language so they match TradingView and
 # course material.
 #
-#   zh-TW  Traditional Chinese (default)
-#   zh-CN  Simplified Chinese
-#   en     English
+# Default is English: the repository is public and its primary audience is
+# international. Change this, or send /language on Telegram, for anything else.
 #
-# Override without editing this file: NOTIFICATION_LANGUAGE=zh-CN
+#   en     English (default)
+#   zh-TW  Traditional Chinese
+#   zh-CN  Simplified Chinese
+#
+# Override without editing this file: NOTIFICATION_LANGUAGE=zh-TW
 notifications:
-  language: zh-TW
+  language: en
 
 universe:
   # How often the universe is recomputed. Kept separate from the ACTIVE-mode
