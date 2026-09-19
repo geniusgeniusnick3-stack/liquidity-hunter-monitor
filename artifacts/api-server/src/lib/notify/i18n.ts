@@ -184,3 +184,38 @@ export const STRINGS: Record<Language, AlertStrings> = {
 export function stringsFor(language: Language): AlertStrings {
   return STRINGS[language] ?? STRINGS[DEFAULT_LANGUAGE];
 }
+
+/** Key under which a user-selected language is stored in the key-value store. */
+export const LANGUAGE_OVERRIDE_KEY = "notification_language";
+
+/**
+ * Decide which language to actually use.
+ *
+ * Precedence, highest first:
+ *   1. NOTIFICATION_LANGUAGE environment variable — deployment-level, and the
+ *      operator running the process should win over a chat command.
+ *   2. A language the user picked at runtime with /language, stored in the
+ *      key-value store so it survives restarts.
+ *   3. `notifications.language` from config.yaml — the installed default.
+ *
+ * `readOverride` is injected rather than imported so this module stays free of
+ * persistence dependencies and can be unit-tested without a database.
+ */
+export function resolveLanguage(
+  configLanguage: Language,
+  readOverride: () => string | null,
+): { language: Language; source: "env" | "user" | "config" } {
+  const envRaw = process.env.NOTIFICATION_LANGUAGE?.trim();
+  if (envRaw) {
+    const envLang = normaliseLanguage(envRaw);
+    if (envLang) return { language: envLang, source: "env" };
+  }
+
+  const stored = readOverride();
+  if (stored) {
+    const userLang = normaliseLanguage(stored);
+    if (userLang) return { language: userLang, source: "user" };
+  }
+
+  return { language: configLanguage, source: "config" };
+}

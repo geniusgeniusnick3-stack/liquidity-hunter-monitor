@@ -46,7 +46,7 @@
 monitoring:
   mode: passive        # passive | active
   active_poll_seconds: 60   # ACTIVE 專用：多久醒來檢查一次
-  active_batch_size: 12     # ACTIVE 專用：每輪處理幾個幣
+  active_concurrency: 12    # ACTIVE 專用：同時處理幾個請求
 ```
 
 或不需要改檔案，用環境變數覆寫：
@@ -104,6 +104,18 @@ NOTIFICATION_LANGUAGE=zh-CN npx tsx artifacts/api-server/src/scripts/live-snapsh
 ```
 
 ICT 縮寫（BSL／SSL／SWEPT／BROKEN）**在所有語言都保留英文**，方便對照 TradingView 與教材。
+
+### 三種設定方式，優先序如下
+
+| 優先 | 方式 | 適用 |
+|---|---|---|
+| 1（最高） | 環境變數 `NOTIFICATION_LANGUAGE` | 部署層級，管理者指定 |
+| 2 | Telegram 指令 `/language zh-CN` | 使用者即時切換，**不需重啟** |
+| 3 | `config.yaml` 的 `notifications.language` | 安裝預設值 |
+
+使用者用指令切換時，設定會存入本機資料庫（不是改 config.yaml——那個檔案在容器裡可能是唯讀的，而且改寫會破壞你的註解）。
+
+⚠️ 如果環境變數已經把語言釘住，用 `/language` 切換會被覆蓋——這時機器人會**明白告訴你**「已記錄，但環境變數優先序更高」，而不是假裝成功。
 
 ---
 
@@ -219,6 +231,9 @@ ICT 縮寫（BSL／SSL／SWEPT／BROKEN）**在所有語言都保留英文**，�
 | `/scan BTCUSDT 1h` | 只掃單一標的的單一時框 |
 | `/events` | 檢視目前狀況（不重新掃描） |
 | `/status` | 系統狀態與設定值 |
+| `/mode` | 查詢監控模式（PASSIVE／ACTIVE） |
+| `/language` | 查詢通知語言 |
+| `/language zh-CN` | 切換通知語言（**立即生效，不需重啟**） |
 | `/help` | 指令說明 |
 
 機器人只回應授權的聊天室，其他來源一律忽略；非指令的文字不會觸發任何掃描。

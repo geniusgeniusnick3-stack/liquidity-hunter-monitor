@@ -18,7 +18,7 @@ console.log("=== 關鍵設定 ===");
 console.log("  universe.refresh_hours        = " + c.universe.refresh_hours);
 console.log("  monitoring.mode               = " + c.monitoring.mode + "（passive=被動查詢 / active=背景監控）");
 console.log("  monitoring.active_poll_seconds= " + c.monitoring.active_poll_seconds);
-console.log("  monitoring.active_batch_size  = " + c.monitoring.active_batch_size);
+console.log("  monitoring.active_concurrency = " + c.monitoring.active_concurrency);
 console.log("  universe 大小                 = 動態（無固定上限，通過門檻即納入）");
 console.log("  universe.exit_threshold_factor= " + c.universe.exit_threshold_factor + "（退出門檻 = 進入 x 此值）");
 console.log("  universe.core_symbols         = " + c.universe.core_symbols.join(", "));

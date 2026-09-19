@@ -97,6 +97,15 @@ async function reply(text: string): Promise<void> {
 }
 
 import { parseCommand, HELP, type Command } from "./telegram-commands.js";
+import {
+  resolveLanguage,
+  normaliseLanguage,
+  LANGUAGE_OVERRIDE_KEY,
+  SUPPORTED_LANGUAGES,
+  type Language,
+} from "../lib/notify/i18n.js";
+import { getLiquidityStore } from "../lib/persistence/LiquidityStore.js";
+import { loadConfig } from "../lib/config/index.js";
 
 async function main(): Promise<void> {
   const me = await tg("getMe", {});
@@ -152,6 +161,9 @@ async function handle(parsed: Command): Promise<void> {
     case "mode":
       await reply(await buildModeReport());
       break;
+    case "language":
+      await reply(await handleLanguage(parsed.value));
+      break;
     case "scan": {
       const args = ["--send"];
       if (parsed.req?.symbol) args.push("--symbols", parsed.req.symbol);
@@ -173,8 +185,81 @@ async function handle(parsed: Command): Promise<void> {
  * The scanner already prints a human-readable summary — we capture stdout and
  * forward it rather than duplicating the logic here.
  */
+/**
+ * Report or change the alert language.
+ *
+ * A change is written to the key-value store rather than to config.yaml: the
+ * file may be read-only in a container, and rewriting YAML from a chat command
+ * would reformat the operator's comments. Precedence is env var > this setting >
+ * config default (see resolveLanguage), so a deployment that pins
+ * NOTIFICATION_LANGUAGE still wins — and we say so, instead of appearing to
+ * accept a change that will not take effect.
+ */
+async function handleLanguage(value?: string): Promise<string> {
+  const cfg = loadConfig();
+  const store = getLiquidityStore();
+
+  const label: Record<Language, string> = {
+    "zh-TW": "繁體中文",
+    "zh-CN": "简体中文",
+    en: "English",
+  };
+
+  if (!value) {
+    const { language, source } = resolveLanguage(
+      cfg.notifications.language,
+      () => store.getState<string>(LANGUAGE_OVERRIDE_KEY),
+    );
+    const origin = source === "env"
+      ? "由環境變數 NOTIFICATION_LANGUAGE 指定"
+      : source === "user"
+        ? "由你在此設定的"
+        : "由 config.yaml 的預設值";
+
+    return [
+      `Language: ${language}（${label[language]}）`,
+      "",
+      `目前語言${origin}。`,
+      "",
+      "切換方式：",
+      "/language zh-TW — 繁體中文",
+      "/language zh-CN — 简体中文",
+      "/language en — English",
+    ].join("\n");
+  }
+
+  const normalised = normaliseLanguage(value);
+  if (!normalised) {
+    return [
+      `無法辨識的語言：「${value}」`,
+      "",
+      `支援：${SUPPORTED_LANGUAGES.join("、")}`,
+      "（也接受 zh_Hant、cn、en-US 等常見寫法）",
+    ].join("\n");
+  }
+
+  store.putState(LANGUAGE_OVERRIDE_KEY, normalised);
+
+  // If the environment pins the language, say so plainly rather than reporting a
+  // change the user will not actually see.
+  const envPinned = normaliseLanguage(process.env.NOTIFICATION_LANGUAGE ?? "");
+  if (envPinned && envPinned !== normalised) {
+    return [
+      `已記錄為 ${normalised}，但環境變數 NOTIFICATION_LANGUAGE=${envPinned} 的優先序更高。`,
+      "",
+      "實際發送的通知仍會是環境變數指定的語言。",
+      "要真正切換，請調整環境變數後重啟服務。",
+    ].join("\n");
+  }
+
+  return [
+    `✅ 通知語言已切換為 ${normalised}（${label[normalised]}）`,
+    "",
+    "下一則通知即生效，不需要重啟。",
+  ].join("\n");
+}
+
 async function buildModeReport(): Promise<string> {
-  const { loadConfig } = await import(resolve(ROOT, "artifacts/api-server/src/lib/config/index.js"));
   const cfg = loadConfig();
   const mode = cfg.monitoring.mode;
 
@@ -196,10 +281,6 @@ async function buildModeReport(): Promise<string> {
 }
 
 async function buildStatus(): Promise<string> {
-  const { getLiquidityStore } = await import(
-    resolve(ROOT, "artifacts/api-server/src/lib/persistence/LiquidityStore.js")
-  );
-  const { loadConfig } = await import(resolve(ROOT, "artifacts/api-server/src/lib/config/index.js"));
   const cfg = loadConfig();
   const store = getLiquidityStore();
   const stats = store.getStats();
@@ -209,7 +290,7 @@ async function buildStatus(): Promise<string> {
     "",
     `模式：被動（只在你下指令時動作）`,
     `追蹤時框：${cfg.timeframes.map((t: string) => t.toUpperCase()).join("、")}`,
-    `接近門檻：${cfg.liquidity.approach_threshold_pct}%`,
+    `接近門檻：${cfg.alert_thresholds.approaching_distance_pct}%`,
     `同區域記憶：${cfg.liquidity.region_lookback_days} 天內｜容忍度 ${cfg.liquidity.region_tolerance_pct}%`,
     "",
     `帳本：${stats.levels} 筆價位（${stats.activeLevels} 筆仍有效）`,

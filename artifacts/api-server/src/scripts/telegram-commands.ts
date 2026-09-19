@@ -16,6 +16,7 @@ export type Command =
   | { kind: "events" }
   | { kind: "status" }
   | { kind: "mode" }
+  | { kind: "language"; value?: string }
   | { kind: "help" }
   | { kind: "ignore" };
 
@@ -37,6 +38,12 @@ export function parseCommand(raw: string): Command {
       return { kind: "events" };
     case "/status":
       return { kind: "status" };
+    case "/language": {
+      // /language          → report current
+      // /language zh-CN    → switch
+      const value = parts[1]?.trim();
+      return { kind: "language", value };
+    }
     case "/mode":
       // Read-only in V1: switching modes at runtime would mean starting or
       // stopping a background monitor from inside a message handler, which is
@@ -60,6 +67,10 @@ export const HELP = `【流動性獵人 — 指令】
 /events — 看現在有什麼（不重新掃描）
 /status — 系統狀態
 /mode — 目前的監控模式
+/language — 查詢通知語言
+/language zh-TW — 切換為繁體中文
+/language zh-CN — 切換為簡體中文
+/language en — 切換為英文
 /help — 這個說明
 
 監控模式：

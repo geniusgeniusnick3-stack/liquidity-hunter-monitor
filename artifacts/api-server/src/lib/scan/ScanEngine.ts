@@ -23,7 +23,7 @@ import { analyzeLiquidity } from "../smc/liquidity.js";
 import { formatApproaching, formatSweepGroup, type LiquiditySide } from "../notify/formatters.js";
 import { AlertDeduplicator, liquidityLevelId, type AlertIdentity } from "../events/Deduplicator.js";
 import { getLiquidityStore } from "../persistence/LiquidityStore.js";
-import type { Language } from "../notify/i18n.js";
+import { resolveLanguage, LANGUAGE_OVERRIDE_KEY, type Language } from "../notify/i18n.js";
 
 // ── Result shapes ───────────────────────────────────────────────────────────
 
@@ -106,7 +106,7 @@ export interface ScanOptions {
    *
    * This is the knob that keeps a large universe inside exchange rate limits:
    * raising it finishes a scan sooner at the cost of burstier traffic. ACTIVE
-   * mode passes monitoring.active_batch_size; PASSIVE leaves it at the default
+   * mode passes monitoring.active_concurrency; PASSIVE leaves it at the default
    * because a one-off query has no reason to be conservative.
    */
   concurrency?: number;
@@ -127,14 +127,19 @@ const TF_ORDER = ["1w", "1d", "4h", "1h", "30m", "15m", "5m", "1m"];
 export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
   const log = options.onLog ?? (() => {});
   const config = loadConfig();
-  const language: Language = config.notifications.language;
+  // Language resolution happens per scan, not once at boot, so a /language
+  // change takes effect on the very next scan instead of requiring a restart.
+  const store = getLiquidityStore();
+  const { language } = resolveLanguage(
+    config.notifications.language,
+    () => store.getState<string>(LANGUAGE_OVERRIDE_KEY),
+  );
 
   const timeframes = options.timeframes?.length ? options.timeframes : config.timeframes;
   const approachPct = config.alert_thresholds.approaching_distance_pct;
   const getCandles = options.candleSource ?? fetchKlines;
 
   // ── Dedup + cooldown (§17, §18), persisted across runs ──
-  const store = getLiquidityStore();
   const dedup = new AlertDeduplicator(
     {
       dedupWindowHours: config.alert_thresholds.dedup_window_hours,

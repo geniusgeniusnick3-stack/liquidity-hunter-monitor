@@ -36,10 +36,17 @@ monitoring:
   # a symbol is only re-analysed when one of its timeframes has actually closed.
   active_poll_seconds: 60
 
-  # ACTIVE only. How many symbols to examine per tick, spreading the work so a
-  # large universe stays well inside exchange rate limits instead of firing
-  # hundreds of requests at once.
-  active_batch_size: 12
+  # ACTIVE only. How many symbol/timeframe requests may be IN FLIGHT AT ONCE.
+  #
+  # This is a concurrency limit, not a batch partition: one scan still covers the
+  # whole universe, it just does not fire every request simultaneously. Raising
+  # it finishes a scan sooner; lowering it smooths out burst traffic.
+  #
+  # Named `concurrency` rather than `batch_size` because batching would mean
+  # scanning part of the universe per tick, which would leave late symbols being
+  # judged minutes after their candle closed — at which point the reading is
+  # stale. Concurrency keeps every symbol judged at the same moment.
+  active_concurrency: 12
 
 # ── Alert language ──────────────────────────────────────────────────────────
 #

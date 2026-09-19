@@ -32,7 +32,7 @@ const ConfigSchema = z.object({
   monitoring: z.object({
     mode: MonitoringModeSchema,
     active_poll_seconds: z.number().positive(),
-    active_batch_size: z.number().int().positive(),
+    active_concurrency: z.number().int().positive(),
   }),
   notifications: z.object({
     language: z.enum(["zh-TW", "zh-CN", "en"]),
@@ -187,7 +187,7 @@ export function loadConfig(options?: { force?: boolean }): AppConfig {
 
   if (cfg.monitoring.mode === "active") {
     logger.warn(
-      { pollSeconds: cfg.monitoring.active_poll_seconds, batchSize: cfg.monitoring.active_batch_size },
+      { pollSeconds: cfg.monitoring.active_poll_seconds, concurrency: cfg.monitoring.active_concurrency },
       "ACTIVE monitoring mode enabled — proactive alerts will be sent",
     );
   }

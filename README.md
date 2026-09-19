@@ -62,7 +62,7 @@ running the ACTIVE monitor while PASSIVE is selected is refused.
 monitoring:
   mode: passive        # passive | active
   active_poll_seconds: 60   # ACTIVE only
-  active_batch_size: 12     # ACTIVE only
+  active_concurrency: 12    # ACTIVE only
 ```
 
 Or override without editing the file:
@@ -122,6 +122,22 @@ NOTIFICATION_LANGUAGE=en npx tsx artifacts/api-server/src/scripts/live-snapshot.
 
 ICT abbreviations (BSL / SSL / SWEPT / BROKEN) stay in English in every language
 so they line up with TradingView and course material.
+
+### Three ways to set it, in precedence order
+
+| Priority | How | Use case |
+|---|---|---|
+| 1 (highest) | `NOTIFICATION_LANGUAGE` env var | Deployment-level, set by an operator |
+| 2 | Telegram `/language zh-CN` | User switches at runtime, **no restart needed** |
+| 3 | `notifications.language` in `config.yaml` | Installed default |
+
+A switch made by command is stored in the local database rather than written back
+to config.yaml — that file may be read-only in a container, and rewriting it would
+reformat the operator's comments.
+
+⚠️ If the environment variable pins the language, `/language` will be overridden —
+and the bot says so plainly ("recorded, but the env var takes precedence") rather
+than appearing to succeed.
 
 ---
 
@@ -246,6 +262,9 @@ when asked, and replies to that one request.
 | `/scan BTCUSDT 1h` | Scan one symbol on one timeframe |
 | `/events` | Show what is live now (no re-scan) |
 | `/status` | System state and configuration |
+| `/mode` | Report the monitoring mode (PASSIVE / ACTIVE) |
+| `/language` | Report the alert language |
+| `/language zh-CN` | Switch alert language (**effective immediately, no restart**) |
 | `/help` | Command list |
 
 The bot answers the authorised chat only. Any other source is ignored, and

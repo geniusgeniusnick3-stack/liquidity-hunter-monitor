@@ -29,6 +29,18 @@ ok(parseCommand("/events").kind === "events", "/events → 看現況");
 ok(parseCommand("/status").kind === "status", "/status → 系統狀態");
 ok(parseCommand("/mode").kind === "mode", "/mode → 監控模式");
 ok(parseCommand("/mode@outsidetest_bot").kind === "mode", "/mode 帶 @bot 後綴仍可解析");
+
+// /language：查詢與切換共用同一個指令
+function langOf(text: string) {
+  const c = parseCommand(text);
+  return c.kind === "language" ? c.value : undefined;
+}
+ok(parseCommand("/language").kind === "language", "/language → 查詢語言");
+ok(langOf("/language") === undefined, "/language 不帶參數 → 只查詢");
+ok(langOf("/language zh-CN") === "zh-CN", "/language zh-CN → 切換簡中");
+ok(langOf("/language en") === "en", "/language en → 切換英文");
+ok(langOf("/language zh-TW") === "zh-TW", "/language zh-TW → 切換繁中");
+ok(langOf("/language klingon") === "klingon", "無法辨識的值原樣傳給處理器（由它報錯）");
 ok(parseCommand("/help").kind === "help", "/help → 說明");
 ok(parseCommand("/start").kind === "help", "/start → 說明");
 
