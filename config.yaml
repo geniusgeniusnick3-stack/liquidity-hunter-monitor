@@ -79,30 +79,52 @@ universe:
     - BNBUSDT
     - XRPUSDT
 
-  # Exit hysteresis, expressed as a threshold gap rather than a rank position.
-  # A symbol that already qualified is only dropped once its metrics fall below
-  # this fraction of the entry floors (e.g. volume beneath 0.85 x 30M = 25.5M).
+  # ── Eligibility ───────────────────────────────────────────────────────────
   #
-  # This replaces the previous entry_rank/removal_rank pair, which required a
-  # fixed Top-N universe and therefore had to be removed. The anti-churn buffer
-  # is the same idea, just anchored to the floors instead of to rank order.
-  exit_threshold_factor: 0.85
+  # The universe has NO fixed size. Every symbol that satisfies these rules is
+  # included: 34 eligible means 34 symbols, 58 means 58, 83 means 83. The count
+  # is an OUTPUT of this section, never an input. Ranking does not exclude
+  # anyone — it only orders the display.
+  #
+  # Two kinds of condition, and the difference matters:
+  #
+  #   THRESHOLDS WITH HYSTERESIS — market-driven metrics that fluctuate daily.
+  #   A symbol JOINS when it clears `entry_min`, but an existing member is only
+  #   REMOVED once it drops below `removal_min`. The band between the two
+  #   absorbs ordinary fluctuation, so a symbol sitting near the line does not
+  #   flicker in and out of the universe.
+  #
+  #   HARD GATES — no band. Either the symbol satisfies it or it does not.
+  #
+  # Entry values below are the previously calibrated ones and are unchanged.
+  # Removal values are PROVISIONAL: a sensible margin below entry, not the
+  # product of measurement. They are configuration, meant to be adjusted once
+  # real churn data exists — treat them as a starting point, not an optimum.
+  eligibility:
+    median_volume_7d:
+      # Measured: P50 = 3.8M, P75 = 12.8M, P90 = 66.6M. 20M is a real floor.
+      # Also the guard against a one-day pump carrying a thin symbol in
+      # (REQUIREMENTS §6.2) — computed from 7 daily candles, median not mean.
+      entry_min: 20000000
+      removal_min: 17000000     # provisional
+    volume_24h:
+      # Measured: P50 = 3.8M, P90 = 66.6M. 30M admits ~86 symbols.
+      entry_min: 30000000
+      removal_min: 25000000     # provisional
+    open_interest:
+      # Measured: P50 = 3.4M, P90 = 24.8M. 5M admits ~187 symbols on its own.
+      entry_min: 5000000
+      removal_min: 4000000      # provisional
 
-  filters:
-    # Measured: P50 = 3.8M, P75 = 12.8M, P90 = 66.6M. 30M admits ~86 symbols
-    # — a real floor, not a token filter.
-    min_quote_volume_24h_usd: 30000000
-
-    # Guards against a one-day pump/news spike carrying a thin symbol into the
-    # watchlist (REQUIREMENTS §6.2). Computed from 7 daily candles, median not mean.
-    min_median_daily_volume_7d_usd: 20000000
-
-    # Measured: P50 = 3.4M, P90 = 24.8M. 5M admits ~187 symbols on its own.
-    min_open_interest_usd: 5000000
-
+    # ── Hard gates: checked at entry AND on every refresh, no grace band ──
+    #
+    # Spread: a wider spread means worse execution. That is a reason to drop a
+    # symbol promptly, not to grant it room to stay.
     # Measured: P50 = 4.46 bps, P90 = 9.12 bps. 10 bps trims the illiquid tail.
     max_spread_bps: 10
 
+    # Listing age: only ever increases, so a symbol that qualifies today always
+    # will. A grace band would be meaningless.
     # Excludes freshly listed perpetuals without enough history for SMC
     # structure to mean anything (REQUIREMENTS §6.5).
     min_listing_age_days: 90

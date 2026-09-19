@@ -239,11 +239,14 @@ across all 528 global USDT perpetuals:
 | Bid/ask spread | ≤ 10 bps | 4.46 bps |
 | 7-day median volume | ≥ $20M | — |
 
-Result: **528 → 58 eligible → top 50 selected.**
+Result: **528 → 58 eligible → all 58 included.**
 
-**Hysteresis** prevents churn: a symbol enters at top 50 and is only removed
-once it falls outside top 70; existing members are protected. Two consecutive
-refreshes produced `added=0 removed=0`.
+There is no Top-50 or fixed Top-N cap. Ranking is retained for display and
+diagnostics only; it must never exclude a symbol that passes eligibility.
+
+**Threshold hysteresis** prevents churn: a newcomer uses `entry_min`, while an
+existing member is removed only below the explicit `removal_min`. Removal values
+are currently marked provisional/configurable, not claimed to be optimal.
 
 ### 4. Event de-duplication (three layers)
 
@@ -262,10 +265,12 @@ a fresh target indefinitely.
 This project uses Node's built-in `node:sqlite` (no native dependency) to track
 each level's lifecycle:
 
-- A price region (0.2% tolerance) already handled **within the past week**
-  is not reported again
-- History older than a week is treated as stale (crypto structure turns over
-  on roughly a weekly cycle)
+- A price region (0.2% tolerance) handled **within the past week** suppresses
+  duplicate events/notifications only
+- **A liquidity level does not expire merely because of age**; an unresolved
+  level remains available beyond seven days until a structural state resolves
+  or invalidates it
+- Event/dedup retention and liquidity-level validity are separate concerns
 - The ledger survives process restarts
 
 ### 6. On-demand query interface
@@ -354,17 +359,30 @@ npx tsx artifacts/api-server/src/scripts/telegram-bot.test.ts             # 14
 timeframes: [1h, 4h]              # Analysis timeframes
 
 universe:
-  min_volume_24h_usd: 30000000    # 24h notional volume floor
-  min_open_interest_usd: 5000000  # Open interest floor
-  max_spread_bps: 10              # Spread ceiling
-  active_size: 50                 # Tracked symbols
-  removal_rank: 70                # Hysteresis: drop out only below this rank
+  # No Top-N cap: every symbol that passes eligibility is included.
+  eligibility:
+    # Hysteresis: newcomers use entry_min; incumbents leave below removal_min.
+    # Removal values are provisional/configurable, not claimed to be optimal.
+    median_volume_7d:
+      entry_min: 20000000         # 7D median volume: join threshold
+      removal_min: 17000000       # 7D median volume: removal threshold (provisional)
+    volume_24h:
+      entry_min: 30000000         # 24h quote volume: join threshold
+      removal_min: 25000000       # 24h quote volume: removal threshold (provisional)
+    open_interest:
+      entry_min: 5000000          # OI: join threshold
+      removal_min: 4000000        # OI: removal threshold (provisional)
+
+    # Hard gates: the same value is used for joining and removal.
+    max_spread_bps: 10
+    min_listing_age_days: 90
 
 liquidity:
   atr_tolerance_multiplier: 0.10  # ATR tolerance multiplier
-  approach_threshold_pct: 0.5     # "Approaching" distance
-  region_tolerance_pct: 0.2       # Same-region tolerance
-  region_lookback_days: 7         # How far back "already handled" counts
+  approach_threshold_pct: 0.5     # approaching distance
+  region_tolerance_pct: 0.2       # same-area tolerance
+  # Event/notification suppression memory, NOT liquidity-level lifetime.
+  region_lookback_days: 7
 
 alert_thresholds:
   cooldown_minutes: 60            # Per-symbol cooldown

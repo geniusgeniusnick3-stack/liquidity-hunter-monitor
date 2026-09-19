@@ -15,7 +15,13 @@
  * stays out — consistent with the fail-closed policy used elsewhere in this
  * system.
  */
-import type { SymbolMetrics, UniverseFilters, FilterCheck, FilterDecision } from "./types.js";
+import type {
+  SymbolMetrics,
+  EligibilityConfig,
+  FilterCheck,
+  FilterDecision,
+  EligibilityBasis,
+} from "./types.js";
 
 const fmtUsd = (v: number | null): string =>
   v === null ? "n/a" : `$${(v / 1e6).toLocaleString("en-US", { maximumFractionDigits: 1 })}M`;
@@ -25,10 +31,32 @@ const fmtBps = (v: number | null): string =>
 
 // ── Eligibility floor ───────────────────────────────────────────────────────
 
+/**
+ * Decide whether a symbol belongs in the universe.
+ *
+ * The standard depends on whether the symbol is already a member:
+ *
+ *   not a member → every banded metric must clear `entryMin`
+ *   already one  → a banded metric may sit anywhere above `removalMin`
+ *
+ * That asymmetry IS the hysteresis. Without it a symbol hovering at the entry
+ * line would join on a good day, drop out the next, and rejoin — churning
+ * membership and re-reporting the same levels.
+ *
+ * The two hard gates (`spread`, `age`) read the same at both ends on purpose:
+ * see the note on EligibilityConfig in types.ts.
+ *
+ * Missing data fails, at both standards. A symbol whose open interest could not
+ * be retrieved has not demonstrated liquidity, and the more lenient standard is
+ * not a licence to guess.
+ */
 export function evaluateEligibility(
   m: SymbolMetrics,
-  f: UniverseFilters,
+  e: EligibilityConfig,
+  options: { isExistingMember?: boolean } = {},
 ): FilterDecision {
+  const isMember = options.isExistingMember ?? false;
+  const basis: EligibilityBasis = isMember ? "removal" : "entry";
   const checks: FilterCheck[] = [];
 
   const push = (
@@ -39,60 +67,63 @@ export function evaluateEligibility(
     detail: string,
   ) => checks.push({ name, passed, value, threshold, detail });
 
+  /**
+   * A banded metric: `>= threshold` where the threshold depends on the basis.
+   * The detail string names which standard was applied, so a decision can be
+   * read back without re-deriving it.
+   */
+  const pushBanded = (
+    name: string,
+    label: string,
+    value: number | null,
+    band: { entryMin: number; removalMin: number },
+  ) => {
+    const threshold = isMember ? band.removalMin : band.entryMin;
+    const what = isMember ? "保留門檻" : "加入門檻";
+    push(
+      name,
+      value,
+      threshold,
+      value !== null && value >= threshold,
+      value === null
+        ? `${label}不可得 → 視為不合格（fail-closed）`
+        : `${label} ${fmtUsd(value)} / ${what} ${fmtUsd(threshold)}`,
+    );
+  };
+
   // 6.1 — 24h traded notional
-  push(
-    "quote_volume_24h",
-    m.quoteVolume24h,
-    f.minQuoteVolume24hUsd,
-    m.quoteVolume24h !== null && m.quoteVolume24h >= f.minQuoteVolume24hUsd,
-    `24h 名目量 ${fmtUsd(m.quoteVolume24h)} / 門檻 ${fmtUsd(f.minQuoteVolume24hUsd)}`,
-  );
+  pushBanded("quote_volume_24h", "24h 名目量", m.quoteVolume24h, e.volume24h);
 
   // 6.2 — 7-day median (defeats a one-day pump)
-  push(
-    "median_daily_volume_7d",
-    m.medianDailyVolume7d,
-    f.minMedianDailyVolume7dUsd,
-    m.medianDailyVolume7d !== null && m.medianDailyVolume7d >= f.minMedianDailyVolume7dUsd,
-    m.medianDailyVolume7d === null
-      ? "7 日中位量不可得 → 視為不合格（fail-closed）"
-      : `7 日中位量 ${fmtUsd(m.medianDailyVolume7d)} / 門檻 ${fmtUsd(f.minMedianDailyVolume7dUsd)}`,
-  );
+  pushBanded("median_daily_volume_7d", "7 日中位量", m.medianDailyVolume7d, e.medianVolume7d);
 
   // 6.3 — open interest
-  push(
-    "open_interest",
-    m.openInterestUsd,
-    f.minOpenInterestUsd,
-    m.openInterestUsd !== null && m.openInterestUsd >= f.minOpenInterestUsd,
-    m.openInterestUsd === null
-      ? "持倉量不可得 → 視為不合格（fail-closed）"
-      : `OI ${fmtUsd(m.openInterestUsd)} / 門檻 ${fmtUsd(f.minOpenInterestUsd)}`,
-  );
+  pushBanded("open_interest", "持倉量", m.openInterestUsd, e.openInterest);
 
-  // 6.4 — bid/ask spread
+  // 6.4 — bid/ask spread. Hard gate: a wider spread is worse execution, so it
+  // is checked at one value whether the symbol is joining or staying.
   push(
     "spread_bps",
     m.spreadBps,
-    f.maxSpreadBps,
-    m.spreadBps !== null && m.spreadBps <= f.maxSpreadBps,
+    e.maxSpreadBps,
+    m.spreadBps !== null && m.spreadBps <= e.maxSpreadBps,
     m.spreadBps === null
       ? "買賣價差不可得 → 視為不合格（fail-closed）"
-      : `價差 ${fmtBps(m.spreadBps)} / 上限 ${fmtBps(f.maxSpreadBps)}`,
+      : `價差 ${fmtBps(m.spreadBps)} / 上限 ${fmtBps(e.maxSpreadBps)}`,
   );
 
-  // 6.5 — listing age
+  // 6.5 — listing age. Hard gate: monotonic, so a band would never be used.
   push(
     "listing_age_days",
     m.listingAgeDays,
-    f.minListingAgeDays,
-    m.listingAgeDays !== null && m.listingAgeDays >= f.minListingAgeDays,
+    e.minListingAgeDays,
+    m.listingAgeDays !== null && m.listingAgeDays >= e.minListingAgeDays,
     m.listingAgeDays === null
       ? "上市日期不可得 → 視為不合格（fail-closed）"
-      : `上市 ${m.listingAgeDays.toFixed(0)} 天 / 門檻 ${f.minListingAgeDays} 天`,
+      : `上市 ${m.listingAgeDays.toFixed(0)} 天 / 門檻 ${e.minListingAgeDays} 天`,
   );
 
-  return { symbol: m.symbol, eligible: checks.every((c) => c.passed), checks };
+  return { symbol: m.symbol, eligible: checks.every((c) => c.passed), checks, basis };
 }
 
 // ── Ranking ─────────────────────────────────────────────────────────────────

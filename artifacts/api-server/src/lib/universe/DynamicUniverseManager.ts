@@ -11,8 +11,9 @@
  *     → active watchlist
  *
  * The set is recomputed on a timer (`universe.refresh_hours`). Recomposition is
- * deliberate about churn: a symbol needs `entry_rank` to join but only leaves
- * once it drops past `removal_rank`, and core symbols never leave.
+ * deliberate about churn: a symbol needs the `entry_min` standard to join but
+ * only leaves once it drops below the `removal_min` standard, and core symbols
+ * never leave. Both standards are plain configured numbers.
  *
  * Request economy: the whole-market endpoints (exchangeInfo, 24h tickers,
  * book tickers, mark prices) cost 4 calls for all ~770 symbols. Only symbols
@@ -112,12 +113,22 @@ export class DynamicUniverseManager {
 
     try {
       const cfg = loadConfig();
-      const filters = {
-        minQuoteVolume24hUsd: cfg.universe.filters.min_quote_volume_24h_usd,
-        minMedianDailyVolume7dUsd: cfg.universe.filters.min_median_daily_volume_7d_usd,
-        minOpenInterestUsd: cfg.universe.filters.min_open_interest_usd,
-        maxSpreadBps: cfg.universe.filters.max_spread_bps,
-        minListingAgeDays: cfg.universe.filters.min_listing_age_days,
+      const elig = cfg.universe.eligibility;
+      const eligibility = {
+        medianVolume7d: {
+          entryMin: elig.median_volume_7d.entry_min,
+          removalMin: elig.median_volume_7d.removal_min,
+        },
+        volume24h: {
+          entryMin: elig.volume_24h.entry_min,
+          removalMin: elig.volume_24h.removal_min,
+        },
+        openInterest: {
+          entryMin: elig.open_interest.entry_min,
+          removalMin: elig.open_interest.removal_min,
+        },
+        maxSpreadBps: elig.max_spread_bps,
+        minListingAgeDays: elig.min_listing_age_days,
       };
 
       // ── 1. Whole-market snapshots (4 requests total) ──
@@ -153,13 +164,23 @@ export class DynamicUniverseManager {
         };
       });
 
-      // ── 3. Expensive metrics only for symbols that already clear the 24h floor ──
+      // ── 3. Expensive metrics only for symbols that clear the 24h floor ──
+      //
+      // The floor here is the REMOVAL standard, not the entry one, and that
+      // detail is load-bearing. An existing member is allowed to sit between
+      // the two thresholds — e.g. 24h volume of 27M against entry 30M /
+      // removal 25M. Shortlisting on the entry value alone would skip fetching
+      // its 7-day volume and open interest, those would read as null, and
+      // fail-closed would eject a member that is entitled to stay. Fetching on
+      // the looser bound means every symbol that could still be a member has
+      // the data needed to decide.
+      const shortlistFloor = Math.min(eligibility.volume24h.entryMin, eligibility.volume24h.removalMin);
       const shortlisted = base.filter(
-        (m) => m.quoteVolume24h !== null && m.quoteVolume24h >= filters.minQuoteVolume24hUsd,
+        (m) => m.quoteVolume24h !== null && m.quoteVolume24h >= shortlistFloor,
       );
 
       logger.info(
-        { total: base.length, shortlisted: shortlisted.length, floorUsd: filters.minQuoteVolume24hUsd },
+        { total: base.length, shortlisted: shortlisted.length, floorUsd: shortlistFloor },
         "Universe: fetching per-symbol metrics for shortlisted symbols",
       );
 
@@ -187,63 +208,47 @@ export class DynamicUniverseManager {
       const allMetrics = base.map((m) => enrichedBySymbol.get(m.symbol) ?? m);
 
       // ── 4. Floor + ranking ──
+      //
+      // Which standard applies depends on whether the symbol is already a
+      // member, so the previous watchlist is read before the loop. This is the
+      // hysteresis: incumbents are judged against the looser bound.
+      const previousForEval = this.snapshot?.activeSymbols ?? [];
+      const previousSet = new Set(previousForEval);
+
       const decisions: Record<string, ReturnType<typeof evaluateEligibility>> = {};
       const eligible: SymbolMetrics[] = [];
 
       for (const m of allMetrics) {
-        const d = evaluateEligibility(m, filters);
+        const d = evaluateEligibility(m, eligibility, {
+          isExistingMember: previousSet.has(m.symbol),
+        });
         decisions[m.symbol] = d;
         if (d.eligible) eligible.push(m);
       }
 
-      const eligibleSet = new Set(eligible.map((m) => m.symbol));
-
-      // Ranking is retained for DISPLAY ORDER and transparency only — it no
-      // longer decides membership, because there is no size cap to rank against.
+      // Ranking is retained for DISPLAY ORDER and transparency only — it does
+      // not decide membership, because there is no size cap to rank against.
       const ranked = rankMetrics(eligible);
       const rankBySymbol = new Map(ranked.map((m) => [m.symbol, m.rank ?? Number.MAX_SAFE_INTEGER]));
 
-      // ── 5. Hysteresis + core symbols ──
+      // ── 5. Core symbols ──
       //
-      // The universe has NO fixed size cap: every symbol clearing the floors is
-      // monitored, so 38 eligible means 38 and 61 means 61. Anti-churn hysteresis
-      // therefore cannot be expressed as a rank position (that required a cap);
-      // it is expressed as a GAP BETWEEN THRESHOLDS instead.
+      // There is no hysteresis work left to do here. Incumbents were already
+      // judged against the removal standard in step 4, so `eligible` contains
+      // both the symbols that newly qualify and the members that are allowed to
+      // stay. A second relaxed pass would be the same test run twice.
       //
-      // An incumbent stays while it still clears a relaxed version of the floors.
-      // It must genuinely decay before being dropped, which is the same guard the
-      // rank buffer provided, but it does not constrain how many symbols qualify.
+      // The universe has NO size cap: 38 eligible means 38 symbols, 61 means
+      // 61. Ranking orders the display and nothing else.
       const allSymbolSet = new Set(allMetrics.map((m) => m.symbol));
       const core = cfg.universe.core_symbols
         .map((s) => s.toUpperCase())
         .filter((s) => allSymbolSet.has(s));
 
-      const previous = this.snapshot?.activeSymbols ?? [];
-      const previousNonCore = previous.filter((s) => !core.includes(s));
+      const previous = previousForEval;
 
-      const exitFactor = cfg.universe.exit_threshold_factor;
-      const relaxedFilters = {
-        minQuoteVolume24hUsd: filters.minQuoteVolume24hUsd * exitFactor,
-        minMedianDailyVolume7dUsd: filters.minMedianDailyVolume7dUsd * exitFactor,
-        minOpenInterestUsd: filters.minOpenInterestUsd * exitFactor,
-        // Spread and listing age are quality gates, not size gates — a wider
-        // spread is a reason to drop a symbol promptly, not to keep it.
-        maxSpreadBps: filters.maxSpreadBps,
-        minListingAgeDays: filters.minListingAgeDays,
-      };
-
-      const metricsBySymbolForEval = new Map(allMetrics.map((m) => [m.symbol, m]));
-
-      const incumbents = previousNonCore.filter((s) => {
-        const m = metricsBySymbolForEval.get(s);
-        if (!m) return false;                       // delisted — drop
-        if (eligibleSet.has(s)) return true;         // still qualifies outright
-        // Only a genuine decay past the relaxed floors removes it.
-        return evaluateEligibility(m, relaxedFilters).eligible;
-      });
-
-      // No cap: eligible symbols all join; incumbents are protected on top.
-      const active = [...new Set([...core, ...eligible.map((m) => m.symbol), ...incumbents])];
+      // No cap: core symbols plus everyone who satisfies the applicable standard.
+      const active = [...new Set([...core, ...eligible.map((m) => m.symbol)])];
 
       // Stable presentation order: core first (config order), then by rank.
       const ordered = [...active].sort((a, b) => {

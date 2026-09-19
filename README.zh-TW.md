@@ -210,10 +210,13 @@ ICT 縮寫（BSL／SSL／SWEPT／BROKEN）**在所有語言都保留英文**，�
 | 買賣價差 | ≤ 10 bps | 4.46 bps |
 | 7 日中位成交量 | ≥ $20M | — |
 
-結果：**528 → 58 個合格 → 取前 50**。
+結果：**528 → 58 個合格 → 58 個全部納入**。
 
-加入**滯後機制**（Hysteresis）避免清單震盪：前 50 名進入，掉出前 70 名才移除，
-舊成員受保護。連續兩次刷新結果為 `added=0 removed=0`。
+Universe 沒有 Top 50 或任何 Top-N 上限。排名只用於顯示與診斷，不能排除已通過資格的 symbol。
+
+加入**門檻滯後機制**（Hysteresis）避免清單震盪：新 symbol 看 `entry_min`，
+既有成員只有跌破明確的 `removal_min` 才移除。移出門檻目前標記為 provisional/configurable，
+不是宣稱最佳值。
 
 ### 4. 事件去重（三層防護）
 
@@ -232,8 +235,9 @@ ICT 縮寫（BSL／SSL／SWEPT／BROKEN）**在所有語言都保留英文**，�
 
 本專案使用 Node.js 內建 `node:sqlite`（無原生依賴），記錄每個價位的生命週期：
 
-- 同一價位區域（容忍度 0.2%）在一週內已被處理過 → 不再重複提示
-- 超過一週的歷史視為過期（加密市場結構約以週為週期輪替）
+- 同一價位區域（容忍度 0.2%）在一週內已被處理過 → 只抑制重複事件/通知
+- **流動性 level 本身不因年齡過期**；未解決的 level 由結構狀態維持，可超過 7 天
+- 事件/去重記憶與 liquidity level 的有效期限是兩套不同概念
 - 記憶跨程序重啟保留
 
 ### 6. 被動式查詢介面
@@ -318,17 +322,30 @@ npx tsx artifacts/api-server/src/scripts/telegram-bot.test.ts
 timeframes: [1h, 4h]              # 分析時框
 
 universe:
-  min_volume_24h_usd: 30000000    # 24h 名目量門檻
-  min_open_interest_usd: 5000000  # 持倉量門檻
-  max_spread_bps: 10              # 價差上限
-  active_size: 50                 # 追蹤標的數
-  removal_rank: 70                # 滯後：掉出此名次才移除
+  # 沒有 Top-N 上限；所有符合 eligibility 的 symbol 全部納入。
+  eligibility:
+    # 帶滯後：新 symbol 要過 entry；既有成員跌破 removal 才移出。
+    # removal 值目前是 provisional/configurable，不宣稱最佳值。
+    median_volume_7d:
+      entry_min: 20000000         # 7D 中位量：加入門檻
+      removal_min: 17000000       # 7D 中位量：移出門檻（provisional）
+    volume_24h:
+      entry_min: 30000000         # 24h 名目量：加入門檻
+      removal_min: 25000000       # 24h 名目量：移出門檻（provisional）
+    open_interest:
+      entry_min: 5000000          # OI：加入門檻
+      removal_min: 4000000        # OI：移出門檻（provisional）
+
+    # 硬門檻：加入與移出使用同一個值。
+    max_spread_bps: 10
+    min_listing_age_days: 90
 
 liquidity:
   atr_tolerance_multiplier: 0.10  # ATR 容忍度倍數
   approach_threshold_pct: 0.5     # 接近門檻
   region_tolerance_pct: 0.2       # 同區域判定容忍度
-  region_lookback_days: 7         # 同區域記憶回溯天數
+  # 這是「事件/通知抑制」記憶，不是 liquidity level 的生命期限。
+  region_lookback_days: 7
 
 alert_thresholds:
   cooldown_minutes: 60            # 同幣冷卻

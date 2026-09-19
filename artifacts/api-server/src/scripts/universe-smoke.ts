@@ -25,14 +25,18 @@ function pad(s: string, n: number): string {
 async function main(): Promise<void> {
   const cfg = loadConfig();
   console.log("=== 設定（config.yaml）===");
-  console.log("  大小=動態（無上限）  exit_threshold_factor=" + cfg.universe.exit_threshold_factor);
+  const el = cfg.universe.eligibility;
+  const mm = (v: number) => "$" + (v / 1e6).toFixed(0) + "M";
+  console.log("  大小=動態（無上限；通過門檻者全部納入）");
   console.log("  core=" + cfg.universe.core_symbols.join(", "));
   console.log(
-    "  filters: 24h>=$" + (cfg.universe.filters.min_quote_volume_24h_usd / 1e6).toFixed(0) + "M" +
-    " | 7d中位>=$" + (cfg.universe.filters.min_median_daily_volume_7d_usd / 1e6).toFixed(0) + "M" +
-    " | OI>=$" + (cfg.universe.filters.min_open_interest_usd / 1e6).toFixed(0) + "M" +
-    " | spread<=" + cfg.universe.filters.max_spread_bps + "bps" +
-    " | age>=" + cfg.universe.filters.min_listing_age_days + "d",
+    "  帶滯後 24h " + mm(el.volume_24h.entry_min) + "/" + mm(el.volume_24h.removal_min) +
+    " | 7d中位 " + mm(el.median_volume_7d.entry_min) + "/" + mm(el.median_volume_7d.removal_min) +
+    " | OI " + mm(el.open_interest.entry_min) + "/" + mm(el.open_interest.removal_min) +
+    "（加入/移出）",
+  );
+  console.log(
+    "  硬門檻 spread<=" + el.max_spread_bps + "bps | age>=" + el.min_listing_age_days + "d",
   );
 
   const t0 = Date.now();

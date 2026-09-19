@@ -18,10 +18,38 @@ import { normaliseLanguage } from "../notify/i18n.js";
 
 // ── Schema ──────────────────────────────────────────────────────────────────
 
-const UniverseFiltersSchema = z.object({
-  min_quote_volume_24h_usd: z.number().nonnegative(),
-  min_median_daily_volume_7d_usd: z.number().nonnegative(),
-  min_open_interest_usd: z.number().nonnegative(),
+/**
+ * A metric with a band around it: join above `entry_min`, leave below
+ * `removal_min`.
+ *
+ * The removal floor must not exceed the entry floor — that would mean a symbol
+ * has to degrade before it is allowed in, and every membership decision would
+ * invert. Caught here rather than at runtime so a bad config fails loudly at
+ * startup.
+ */
+const HysteresisSchema = z
+  .object({
+    entry_min: z.number().nonnegative(),
+    removal_min: z.number().nonnegative(),
+  })
+  .refine((v) => v.removal_min <= v.entry_min, {
+    message: "removal_min must be <= entry_min (otherwise the hysteresis band is inverted)",
+  });
+
+/**
+ * Universe eligibility.
+ *
+ * Three of these carry a hysteresis band because they move daily; two are hard
+ * gates because a grace band would be meaningless or harmful:
+ *
+ *   spread  — a wider spread is worse execution. Give it room and the symbol
+ *             stays in the universe while becoming expensive to trade.
+ *   age     — monotonic. A symbol that clears it continues to clear it.
+ */
+const EligibilitySchema = z.object({
+  median_volume_7d: HysteresisSchema,
+  volume_24h: HysteresisSchema,
+  open_interest: HysteresisSchema,
   max_spread_bps: z.number().nonnegative(),
   min_listing_age_days: z.number().nonnegative(),
 });
@@ -40,10 +68,9 @@ const ConfigSchema = z.object({
   universe: z.object({
     refresh_hours: z.number().positive(),
     core_symbols: z.array(z.string().min(3)),
-    // Hysteresis by threshold gap, not by rank — the universe has no fixed
-    // size, so there is no rank position to anchor a buffer to.
-    exit_threshold_factor: z.number().positive().max(1),
-    filters: UniverseFiltersSchema,
+    // Membership is threshold-driven, never rank-driven: the universe has no
+    // fixed size, so there is no rank position a buffer could hang off.
+    eligibility: EligibilitySchema,
   }),
   timeframes: z.array(z.string()).min(1),
   scanner_timeframes: z.array(z.string()).min(1),
@@ -197,7 +224,15 @@ export function loadConfig(options?: { force?: boolean }): AppConfig {
     {
       file,
       monitoringMode: cfg.monitoring.mode,
-      exitThresholdFactor: cfg.universe.exit_threshold_factor,
+      // Both ends of each band are logged, because "what removes a symbol?"
+      // should be answerable from the startup log without reading the file.
+      eligibility: {
+        volume24h: cfg.universe.eligibility.volume_24h,
+        medianVolume7d: cfg.universe.eligibility.median_volume_7d,
+        openInterest: cfg.universe.eligibility.open_interest,
+        maxSpreadBps: cfg.universe.eligibility.max_spread_bps,
+        minListingAgeDays: cfg.universe.eligibility.min_listing_age_days,
+      },
       timeframes: cfg.timeframes,
     },
     "Configuration loaded",
