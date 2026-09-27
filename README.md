@@ -6,6 +6,7 @@
 > push unless you turn on ACTIVE mode.
 
 > ### 繁體中文說明 ｜ [完整中文版 README.zh-TW.md](README.zh-TW.md)
+> ### 简体中文说明 ｜ [完整中文版 README.zh-CN.md](README.zh-CN.md)
 >
 > 這是一套**預設為被動式**的 SMC（Smart Money Concepts）流動性監控系統，
 > 也可選用背景主動監控。
@@ -388,6 +389,64 @@ plain text never triggers a scan.
 
 ---
 
+## Market state — did the breakout hold, or fail?
+
+`SWEPT` and `BROKEN` describe ONE completed candle: did price trade beyond a
+level, and where did it close? That is a fact, and it is deliberately blind to
+what happens next — a level that is `BROKEN` stays `BROKEN` forever, because the
+walk stops at the first take.
+
+That leaves the question a trader actually has unanswered: after buy-side
+liquidity is taken, did the market **accept** the breakout, or did it **fail** and
+start building the case for the other direction?
+
+`lib/smc/market-state.ts` answers exactly that and nothing more. Three layers are
+kept visibly apart:
+
+| Layer | Answers | Vocabulary |
+|---|---|---|
+| Fact | what price did | `SWEPT` `BROKEN` `TOUCHED` |
+| State | what that leaves behind | `BREAKOUT_ACCEPTED` `BREAKOUT_FAILURE_WATCH` `REVERSAL_CONFIRMED` (+ SSL mirrors) |
+| Read | what a human may infer | `SHORT` `BLOCKED` `WATCH` `ARMED` `READY` |
+
+A single-symbol query shows all three. Status **tokens** are not translated — they
+are the engine's vocabulary and must read identically in logs, JSON and every
+language — only the labels are localised.
+
+What this layer will NOT do:
+
+- **treat a sweep as a reversal.** A `SWEPT` level never closed beyond, so there
+  is nothing to accept or fail.
+- **treat a wick as a break.** Every judgement is made from completed candle
+  closes.
+- **treat the engine's `CHoCH` as a short confirmation.** `CHoCH` is generated
+  from pivot order alone — no close, no level, no displacement — so it is left
+  exactly as it was, and a strictly-defined confirmed MSS is added beside it.
+- **treat every unfilled bearish FVG as a signal.** A zone only counts if it
+  formed AFTER the confirmed MSS and has not been invalidated.
+- **place an order.** There is no order path anywhere in this project.
+
+### Two-stage scan (the funnel)
+
+Depth needs structure, gaps and order blocks; those only mean something once
+something WAS taken. So a scan runs stage 1 across the whole universe and depth
+only where a take happened recently:
+
+```
+stage 1  every symbol × timeframe   analyzeLiquidity()                cheap
+gate     hasRecentTake()            a take within the last 24 bars
+stage 2  passing pairs only         structure + FVG + OB + the state  expensive
+```
+
+The window is not arbitrary. Acceptance needs candles to accumulate: judged one
+candle after a take, every level can only ever be "swept so far", and
+`BREAKOUT_ACCEPTED` could never be observed at all.
+
+On by default. `config.yaml → market_state.enabled: false` falls back to the
+previous behaviour exactly.
+
+---
+
 ## Quick start
 
 ### Requirements
@@ -433,16 +492,31 @@ npx tsx artifacts/api-server/src/scripts/live-snapshot.ts --symbols BTCUSDT --ti
 
 ### Tests
 
-486 tests pass (185 added by this project + 302 upstream engine tests):
+**986 assertions pass, 0 fail**, across all 21 test files:
 
 ```bash
-npx tsx artifacts/api-server/src/lib/smc/liquidity-interaction.test.ts   # 31
-npx tsx artifacts/api-server/src/lib/events/deduplicator.test.ts          # 26
+for f in $(find artifacts/api-server/src -name "*.test.ts" | sort); do npx tsx "$f"; done
+```
+
+The largest suites, for spot checks:
+
+```bash
+npx tsx artifacts/api-server/src/lib/smc/market-state.test.ts             # 65
+npx tsx artifacts/api-server/src/lib/smc/liquidity-interaction.test.ts    # 31
+npx tsx artifacts/api-server/src/lib/smc/order-blocks.test.ts            # 100
 npx tsx artifacts/api-server/src/lib/notify/formatters.test.ts            # 84
 npx tsx artifacts/api-server/src/lib/persistence/liquidity-store.test.ts  # 43
-npx tsx artifacts/api-server/src/scripts/telegram-bot.test.ts             # 14
-# plus the 7 upstream engine modules (302)
+npx tsx artifacts/api-server/src/scripts/telegram-bot.test.ts             # 22
 ```
+
+> An earlier revision of this section claimed "486 tests pass (185 added by this
+> project + 302 upstream engine tests)". That figure did not match the suite and
+> its breakdown could not be reproduced. The number above is a measured count,
+> and it will need re-measuring whenever tests are added — which is exactly why
+> the command is written out rather than the total being trusted.
+
+Note that CI runs typecheck and build only; it has never run this suite. That is
+a real gap, and it is stated here rather than implied away.
 
 ---
 

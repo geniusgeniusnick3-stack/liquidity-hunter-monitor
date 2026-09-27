@@ -10,6 +10,7 @@
  * contains nothing that only makes sense to an operator.
  */
 import { formatScanReply } from "./formatters.js";
+import { stringsFor } from "./i18n.js";
 import type { Language } from "./i18n.js";
 
 let passed = 0;
@@ -175,6 +176,59 @@ console.log("單幣查詢必須顯示完整現況，不是「沒有事件」");
   // More than one snapshot → fall back to the event list.
   const two = formatScanReply({ ...empty, snapshots: [snapshot, snapshot] }, "zh-TW");
   ok(two.length > 0, "多個幣時不使用單幣快照模式");
+}
+
+console.log("─".repeat(60));
+console.log("合併水位（等高等低）要在回報中被標出來");
+
+{
+  const merged = {
+    ...empty,
+    scope: "all tracked symbols",
+    events: [
+      // Two levels settled by one candle; only the second is a merged equal-highs
+      // pool. The mark has to end up on THAT price, not on the plain one.
+      {
+        symbol: "TAOUSDT", timeframe: "4h", side: "BSL" as const, state: "SWEPT" as const,
+        levels: [0.4279, 0.4288], levelTypes: ["BSL" as const, "EQH" as const],
+      },
+      {
+        symbol: "SUIUSDT", timeframe: "1h", side: "SSL" as const, state: "BROKEN" as const,
+        levels: [1.2345], levelTypes: ["EQL" as const],
+      },
+    ],
+    approaches: [
+      { symbol: "DOGEUSDT", timeframes: ["4h"], side: "BSL" as const, price: 0.07828, distancePct: 0.31, poolType: "EQH" as const },
+    ],
+  };
+
+  for (const lang of LANGS) {
+    const text = formatScanReply(merged, lang);
+    const s = stringsFor(lang);
+
+    ok(text.includes("⚖️"), `[${lang}] 合併水位帶 emoji 標記`);
+    ok(text.includes(s.typeEqh), `[${lang}] 標出等高點（${s.typeEqh}）`);
+    ok(text.includes(s.typeEql), `[${lang}] 標出等低點（${s.typeEql}）`);
+    ok(text.includes("0.4288 ⚖️"), `[${lang}] 標記貼在合併的那個價位上`);
+    ok(!text.includes("0.4279 ⚖️"), `[${lang}] 一般轉折點不會被誤標`);
+    ok(text.includes("0.07828") && text.includes("⚖️"), `[${lang}] 接近中的合併水位也標`);
+  }
+
+  // Backward compatibility: a caller that predates the kinds must not crash and
+  // must not invent a mark. Preview scripts and older tests build rows by hand.
+  const legacy = formatScanReply({
+    ...empty,
+    events: [{ symbol: "XLMUSDT", timeframe: "4h", side: "BSL" as const, state: "SWEPT" as const, levels: [0.19864] }],
+  }, "zh-TW");
+  ok(!legacy.includes("⚖️"), "沒有帶型別時不會出現標記（相容舊呼叫端）");
+  ok(legacy.includes("0.19864"), "沒有帶型別時價位照常顯示");
+
+  // A plain approach (no merged kind) stays unmarked.
+  const plainApproach = formatScanReply({
+    ...empty,
+    approaches: [{ symbol: "XRPUSDT", timeframes: ["1h"], side: "SSL" as const, price: 2.1, distancePct: 0.5 }],
+  }, "zh-TW");
+  ok(!plainApproach.includes("⚖️"), "一般水位不會被標記");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -18,14 +18,25 @@
  */
 import { loadConfig } from "../config/index.js";
 import { fetchKlines } from "../market/futures.js";
+import { admitCandles, type ClosureEvidence } from "../smc/candles.js";
 import type { Candle } from "../smc/types.js";
 import { analyzeLiquidity } from "../smc/liquidity.js";
 import type { LiquidityPool } from "../smc/types.js";
+import { analyzeStructure } from "../smc/structure.js";
+import { analyzeFVG } from "../smc/fvg.js";
+import { analyzeOrderBlocks } from "../smc/order-blocks.js";
+import {
+  analyzeMarketState,
+  hasRecentTake,
+  DEFAULT_MARKET_STATE_CONFIG,
+  type MarketStateConfig,
+} from "../smc/market-state.js";
+import type { MarketState } from "../smc/types.js";
 import { restorePersistedLevels } from "./RestoredLevels.js";
 import { formatApproaching, formatSweepGroup, type LiquiditySide } from "../notify/formatters.js";
 import { AlertDeduplicator, liquidityLevelId, type AlertIdentity } from "../events/Deduplicator.js";
 import { getLiquidityStore } from "../persistence/LiquidityStore.js";
-import { resolveLanguage, LANGUAGE_OVERRIDE_KEY, type Language } from "../notify/i18n.js";
+import { resolveLanguage, stringsFor, LANGUAGE_OVERRIDE_KEY, type Language } from "../notify/i18n.js";
 
 // ── Result shapes ───────────────────────────────────────────────────────────
 
@@ -36,6 +47,15 @@ export interface ScanEvent {
   state: "SWEPT" | "BROKEN";
   /** Every level settled by the same candle — collapsed into one alert. */
   levels: number[];
+  /**
+   * The pool kind behind each entry in `levels`, positionally parallel.
+   *
+   * `side` collapses EQH→BSL and EQL→SSL, so by the time a level reaches the
+   * message layer a merged equal-level pool is indistinguishable from a plain
+   * swing. The kinds travel alongside the prices for that reason: the report has
+   * to be able to say "this one was tested twice".
+   */
+  levelTypes: LiquidityPool["type"][];
   candleTime: number;
   extreme: number;
   close: number;
@@ -52,6 +72,12 @@ export interface ScanApproach {
   currentPrice: number;
   distancePct: number;
   source: string;
+  /**
+   * The pool kind (BSL/SSL/EQH/EQL). `side` collapses the merged variants, so
+   * without this the message layer cannot tell the reader that the approaching
+   * level is one that has already been tested twice.
+   */
+  poolType: LiquidityPool["type"];
 }
 
 export interface ScanHistorySkip {
@@ -59,6 +85,7 @@ export interface ScanHistorySkip {
   timeframe: string;
   side: LiquiditySide;
   price: number;
+  poolType: LiquidityPool["type"];
   priorPrice: number;
   priorState: string;
   priorAt: number | null;
@@ -95,6 +122,12 @@ export interface LevelSnapshot {
   formedAt: number;
   interactionAt: number | null;
   touches: number;
+  /**
+   * The pool's own kind (BSL/SSL/EQH/EQL). `side` collapses EQH→BSL and EQL→SSL
+   * because every consumer asks by side; this keeps the distinction that the
+   * merge produced, so a reply can name a merged level.
+   */
+  poolType: LiquidityPool["type"];
 }
 
 export interface SymbolSnapshot {
@@ -102,6 +135,21 @@ export interface SymbolSnapshot {
   timeframe: string;
   currentPrice: number;
   levels: LevelSnapshot[];
+  /**
+   * Post-interaction market state for this symbol/timeframe.
+   *
+   * Null in two cases: the layer is switched off in config, or the funnel
+   * stopped here (nothing was taken within the screening window, so there is no
+   * state to describe — not "no state exists", just "nothing worth judging").
+   */
+  marketState: MarketState | null;
+}
+
+/** The state layer for one symbol/timeframe, as returned from a scan. */
+export interface SymbolMarketState {
+  symbol: string;
+  timeframe: string;
+  state: MarketState;
 }
 
 export interface ScanResult {
@@ -127,6 +175,14 @@ export interface ScanResult {
    * market-wide summary that does not display it.
    */
   snapshots: SymbolSnapshot[];
+  /**
+   * Stage-2 results — one entry per symbol/timeframe that passed the funnel.
+   *
+   * Populated whether or not the caller asked for snapshots, because a
+   * market-wide query wants the states even though it does not want a hundred
+   * level lists.
+   */
+  marketStates: SymbolMarketState[];
 }
 
 export interface ScanOptions {
@@ -161,6 +217,16 @@ export interface ScanOptions {
    * query should always hit the exchange.
    */
   candleSource?: (symbol: string, timeframe: string, limit: number) => Promise<Candle[]>;
+  /**
+   * What the candle source can prove about its own last bar.
+   *
+   * A custom `candleSource` is an UNKNOWN source from this module's point of
+   * view, so it defaults to "unprovable" — the gate drops its last row. A caller
+   * that knows its source returns only closed bars says so explicitly. The
+   * default fetch path is Binance klines, which carries a close time per row, so
+   * it can prove closure. See `lib/smc/candles.ts`.
+   */
+  candleClosure?: ClosureEvidence;
   /**
    * How many symbol/timeframe pairs to analyse at once.
    *
@@ -215,7 +281,12 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
 
   const timeframes = options.timeframes?.length ? options.timeframes : config.timeframes;
   const approachPct = config.alert_thresholds.approaching_distance_pct;
-  const getCandles = options.candleSource ?? fetchKlines;
+  // The live scan keeps the forming candle: the reader's chart shows it, and a
+  // wick on it is a rejection that has already happened. See ClosureEvidence.
+  const getCandles = options.candleSource ?? ((s: string, t: string, l: number) =>
+    fetchKlines(s, t, l, true));
+  const candleClosure: ClosureEvidence =
+    options.candleClosure ?? (options.candleSource ? "unprovable" : "live-last");
 
   // ── Dedup + cooldown (§17, §18), persisted across runs ──
   const dedup = new AlertDeduplicator(
@@ -262,10 +333,29 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
   const regionTolerancePct = config.liquidity.region_tolerance_pct;
   const regionLookbackDays = config.liquidity.region_lookback_days;
 
+  // ── Stage-2 configuration ──
+  //
+  // The funnel is deliberate. Stage 1 answers "was anything taken?" for the
+  // whole universe and costs one liquidity analysis per pair. Everything stage 2
+  // adds — structure, gaps, blocks — is only meaningful once something WAS
+  // taken, so it runs for those pairs and nowhere else. On a market-wide scan
+  // that is typically a handful out of ~110.
+  //
+  // `explicitScope` matters because a caller who named a symbol has already
+  // said which one they care about; answering "nothing recent was taken" with an
+  // empty state would be unhelpful when they asked a direct question.
+  const marketStateEnabled = config.market_state.enabled;
+  const marketStateConfig: MarketStateConfig = {
+    ...DEFAULT_MARKET_STATE_CONFIG,
+    screening_lookback_bars: config.market_state.screening_lookback_bars,
+  };
+  const explicitScope = Boolean(options.symbols?.length);
+
   const groupMap = new Map<string, ScanEvent>();
   // Only worth gathering when the caller asked about specific symbols.
   const wantSnapshots = Boolean(options.symbols?.length);
   const snapshots: SymbolSnapshot[] = [];
+  const marketStatesRaw: SymbolMarketState[] = [];
   const approachingRaw: ScanApproach[] = [];
   const historySkipped: ScanHistorySkip[] = [];
   let scanned = 0;
@@ -288,11 +378,32 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
       const i = cursor++;
       if (i >= pairs.length) return;
       const { symbol, tf } = pairs[i];
+      // Which phase blew up, for the catch below. Without it a failure is a bare
+      // count and the operator cannot tell a network problem from a bad candle
+      // from a state-layer fault.
+      let stage = "fetch";
       try {
-        const candles = await getCandles(symbol, tf, SCAN_CANDLE_LIMIT);
-        if (candles.length < config.scanner.min_candles_required) continue;
+        // The gate runs here as well as inside the fetchers, because a custom
+        // `candleSource` bypasses them entirely. That path used to hand raw rows
+        // straight to analyzeLiquidity() AND to the `currentPrice` divisor below,
+        // so a zero price reached a division. One gate, every door.
+        const fetched = await getCandles(symbol, tf, SCAN_CANDLE_LIMIT);
+        const admission = admitCandles(fetched, {
+          closure: candleClosure,
+          nowSeconds: Date.now() / 1000,
+          minCandles: config.scanner.min_candles_required,
+        });
+        if (admission.rejected.length > 0) {
+          log(
+            `${symbol} ${tf}: 准入關卡剔除 ${admission.rejected.length} 根 — ` +
+              admission.rejected.slice(0, 3).map((r) => `#${r.index}:${r.reason}`).join(", "),
+          );
+        }
+        const candles = admission.candles;
+        if (!admission.usable) continue;
 
         scanned++;
+        stage = "liquidity";
         const lastClosed = candles[candles.length - 1];
         latestCandleTime = Math.max(latestCandleTime, lastClosed.time);
         const currentPrice = lastClosed.close;
@@ -324,6 +435,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
               formedAt: pool.time,
               interactionAt: pool.interactionAt,
               touches: pool.touches,
+              poolType: pool.type,
             });
           }
 
@@ -336,7 +448,9 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
             price: pool.price,
             formedAt: pool.time,
             session: pool.session,
-            source: `${pool.touches} 次觸及`,
+            // Localised, not hardcoded: this string is read by the user, and a
+            // Simplified or English reader must not get Traditional wording.
+            source: stringsFor(language).touches(pool.touches),
             touches: pool.touches,
           });
 
@@ -363,6 +477,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
             if (priorTaken && priorTaken.id !== levelId) {
               historySkipped.push({
                 symbol, timeframe: tf, side, price: pool.price,
+                poolType: pool.type,
                 priorPrice: priorTaken.price,
                 priorState: priorTaken.state,
                 priorAt: priorTaken.sweptAt ?? priorTaken.brokenAt ?? priorTaken.stateChangedAt,
@@ -381,12 +496,14 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
             const existing = groupMap.get(key);
             if (existing) {
               existing.levels.push(pool.price);
+              existing.levelTypes.push(pool.type);
             } else {
               groupMap.set(key, {
                 symbol, timeframe: tf, side,
                 state: pool.interaction as "SWEPT" | "BROKEN",
                 candleTime: lastClosed.time,
                 levels: [pool.price],
+                levelTypes: [pool.type],
                 extreme: side === "BSL" ? pool.interactionCandle.high : pool.interactionCandle.low,
                 close: pool.interactionCandle.close,
               });
@@ -401,9 +518,11 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
             if (onCorrectSide && distancePct <= approachPct) {
               approachingRaw.push({
                 symbol, side, price: pool.price,
+                poolType: pool.type,
                 timeframes: [tf], primary: tf,
                 currentPrice, distancePct,
-                source: `${pool.touches} 次觸及｜${pool.session ?? "未知時段"}`,
+                // Localised for the same reason as the snapshot's source line.
+                source: `${stringsFor(language).touches(pool.touches)}｜${pool.session ?? stringsFor(language).unknownSession}`,
               });
             }
           }
@@ -425,6 +544,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
           .listLevels(symbol, tf)
           .filter((l) => l.state === "ACTIVE" || l.state === "APPROACHING" || l.state === "TOUCHED");
 
+        stage = "restore";
         const restore = restorePersistedLevels({
           candidates,
           candles,
@@ -437,11 +557,61 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
           log(`restored ${restore.restored.length} level(s) beyond the engine's reach for ${symbol} ${tf}`);
         }
 
-        if (wantSnapshots) {
-          snapshots.push({ symbol, timeframe: tf, currentPrice, levels });
+        // ── Stage 2: depth, only for what passed the funnel ──
+        //
+        // Everything below is the answer to "did the market accept that take, or
+        // is it failing?" — which is meaningless until something has been taken.
+        // Running it for all ~110 pairs would triple the analysis cost per scan
+        // to describe levels that were never touched.
+        stage = "market-state";
+
+        // The gate must see EVERY level this pass handled, not only the engine's
+        // own output. A level restored from the ledger and taken recently is
+        // exactly the case the section above exists for — gating it out would
+        // silently drop it from the state layer while it still appeared in the
+        // level list, which is the worst of both.
+        const allPools = [...res.pools, ...restore.restored];
+
+        let marketState: MarketState | null = null;
+        const investigate =
+          marketStateEnabled &&
+          (explicitScope || hasRecentTake(allPools, candles, tf, marketStateConfig));
+
+        if (investigate) {
+          const structure = analyzeStructure(candles, tf);
+          const fvg = analyzeFVG(candles, "crypto");
+          const orderBlocks = analyzeOrderBlocks(candles, fvg);
+          marketState = analyzeMarketState({
+            candles,
+            timeframe: tf,
+            liquidity: allPools,
+            structure,
+            fvg,
+            orderBlocks,
+            config: marketStateConfig,
+            // `live-last` means the final row is the candle still forming. Passing it
+            // lets the state layer read the bar the reader is watching (see the wick
+            // rule in evaluateBreakout). A backtest source reports `proven` and this
+            // stays false.
+            formingLast: candleClosure === "live-last",
+          });
+          marketStatesRaw.push({ symbol, timeframe: tf, state: marketState });
+        } else if (marketStateEnabled) {
+          log(`stage 2 skipped for ${symbol} ${tf} — nothing taken within the screening window`);
         }
-      } catch {
+
+        if (wantSnapshots) {
+          snapshots.push({ symbol, timeframe: tf, currentPrice, levels, marketState });
+        }
+      } catch (err) {
         failures++;
+        // Named, never silently counted. Stage 2 widened the surface this catch
+        // covers, so "failures: 3" with no further detail stopped being enough
+        // to operate from.
+        log(
+          `FAILED ${symbol} ${tf} at stage=${stage} — ` +
+          (err instanceof Error ? err.message : String(err)),
+        );
       }
     }
   };
@@ -498,7 +668,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
     pending.push({
       text: formatSweepGroup({
         symbol: g.symbol, timeframe: g.timeframe, side: g.side, state: g.state,
-        levels: g.levels, extreme: g.extreme, close: g.close,
+        levels: g.levels, levelTypes: g.levelTypes, extreme: g.extreme, close: g.close,
       }, language),
       identity,
       label,
@@ -521,11 +691,18 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
       continue;
     }
     const otherTfs = a.timeframes.filter((t) => t !== a.primary).map((t) => t.toUpperCase());
+    // Localised, and the list separator follows the locale: a full-width 、 inside
+    // an English message is as wrong as Traditional wording inside a Simplified
+    // one. `alsoOn` already exists in all three string sets.
+    const alsoOn = otherTfs.length
+      ? `${language === "en" ? " | " : "｜"}${stringsFor(language).alsoOn(otherTfs.join(language === "en" ? ", " : "、"))}`
+      : "";
     pending.push({
       text: formatApproaching({
         symbol: a.symbol, timeframe: a.primary, side: a.side, level: a.price,
+        poolType: a.poolType,
         currentPrice: a.currentPrice, distancePct: a.distancePct,
-        source: a.source + (otherTfs.length ? `｜亦出現於 ${otherTfs.join("、")}` : ""),
+        source: a.source + alsoOn,
       }, language),
       identity,
       label,
@@ -551,5 +728,6 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanResult> {
     eligibleCount,
     language,
     snapshots,
+    marketStates: marketStatesRaw,
   };
 }

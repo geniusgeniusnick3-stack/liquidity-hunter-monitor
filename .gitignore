@@ -64,3 +64,8 @@ docs-backup/
 /data/liquidity.db
 /data/liquidity.db-shm
 /data/liquidity.db-wal
+# The same ledger as seen from the repo root. The api-server runs with its own
+# cwd, so its copies live under artifacts/ and the patterns above miss them.
+/artifacts/api-server/data/liquidity.db
+/artifacts/api-server/data/liquidity.db-shm
+/artifacts/api-server/data/liquidity.db-wal

@@ -78,6 +78,21 @@ export interface AlertStrings {
   alsoOn: (timeframes: string) => string;
   /** "2 次觸及" / "2 touches" */
   touches: (n: number) => string;
+
+  // ── equal highs / equal lows (§2 EQH/EQL) ──
+  //
+  // Both Chinese communities use 等高 / 等低 for Equal Highs / Equal Lows, so the
+  // two locales differ only in script here. The wording is NOT free-styled:
+  // 等高點 · 等低點 is what Traditional-Chinese SMC material prints, and
+  // 等高点 · 等低点 is what Simplified-Chinese material prints (see the note in
+  // the README). Do not "improve" one side into the other's spelling.
+  /** Level name for a merged equal-highs pool. */
+  typeEqh: string;
+  /** Level name for a merged equal-lows pool. */
+  typeEql: string;
+  /** Short clause naming how many swings formed the merged level. */
+  equalLevelNote: (swings: number) => string;
+
   unknownSession: string;
 }
 
@@ -92,10 +107,10 @@ const ZH_TW: AlertStrings = {
   labelDistance: "距離",
   labelSource: "來源",
 
-  sideBsl: "買方流動性（BSL）",
-  sideSsl: "賣方流動性（SSL）",
-  stateSwept: "掃過（SWEPT）",
-  stateBroken: "突破（BROKEN）",
+  sideBsl: "上方流動性",
+  sideSsl: "下方流動性",
+  stateSwept: "只是掃到",
+  stateBroken: "突破了",
 
   labelLevel: "價位",
   labelWickHigh: "刺破高點",
@@ -106,12 +121,18 @@ const ZH_TW: AlertStrings = {
     if (side === "BSL") return broken ? "收在流動性區間上方" : "收回流動性區間下方";
     return broken ? "收在流動性區間下方" : "收回流動性區間上方";
   },
-  statement: ({ beyond, settled, timeframe, count, side }) =>
-    count > 1
-      ? `價格${beyond} ${count} 條 ${side}，該根完成的${timeframe} K 線${settled}。`
-      : `價格${beyond} ${side}，該根完成的${timeframe} K 線${settled}。`,
+  // `side` arrives as the raw token; a reader gets the words instead.
+  statement: ({ beyond, settled, timeframe, count, side }) => {
+    const who = side === "BSL" ? "上方流動性" : "下方流動性";
+    return count > 1
+      ? `價格${beyond} ${count} 條${who}，該根完成的${timeframe} K 線${settled}。`
+      : `價格${beyond}${who}，該根完成的${timeframe} K 線${settled}。`;
+  },
   alsoOn: (tfs) => `亦出現於 ${tfs}`,
   touches: (n) => `${n} 次觸及`,
+  typeEqh: "等高點（EQH）",
+  typeEql: "等低點（EQL）",
+  equalLevelNote: (n) => `由 ${n} 個轉折點組成`,
   unknownSession: "未知時段",
 };
 
@@ -126,10 +147,10 @@ const ZH_CN: AlertStrings = {
   labelDistance: "距离",
   labelSource: "来源",
 
-  sideBsl: "买方流动性（BSL）",
-  sideSsl: "卖方流动性（SSL）",
-  stateSwept: "扫过（SWEPT）",
-  stateBroken: "突破（BROKEN）",
+  sideBsl: "上方流动性",
+  sideSsl: "下方流动性",
+  stateSwept: "只是扫到",
+  stateBroken: "突破了",
 
   labelLevel: "价位",
   labelWickHigh: "刺破高点",
@@ -140,12 +161,17 @@ const ZH_CN: AlertStrings = {
     if (side === "BSL") return broken ? "收在流动性区间上方" : "收回流动性区间下方";
     return broken ? "收在流动性区间下方" : "收回流动性区间上方";
   },
-  statement: ({ beyond, settled, timeframe, count, side }) =>
-    count > 1
-      ? `价格${beyond} ${count} 条 ${side}，该根完成的${timeframe} K 线${settled}。`
-      : `价格${beyond} ${side}，该根完成的${timeframe} K 线${settled}。`,
+  statement: ({ beyond, settled, timeframe, count, side }) => {
+    const who = side === "BSL" ? "上方流动性" : "下方流动性";
+    return count > 1
+      ? `价格${beyond} ${count} 条${who}，该根完成的${timeframe} K 线${settled}。`
+      : `价格${beyond}${who}，该根完成的${timeframe} K 线${settled}。`;
+  },
   alsoOn: (tfs) => `亦出现于 ${tfs}`,
   touches: (n) => `${n} 次触及`,
+  typeEqh: "等高点（EQH）",
+  typeEql: "等低点（EQL）",
+  equalLevelNote: (n) => `由 ${n} 个转折点组成`,
   unknownSession: "未知时段",
 };
 
@@ -160,10 +186,10 @@ const EN: AlertStrings = {
   labelDistance: "Distance",
   labelSource: "Source",
 
-  sideBsl: "Buy-Side Liquidity (BSL)",
-  sideSsl: "Sell-Side Liquidity (SSL)",
-  stateSwept: "Swept (SWEPT)",
-  stateBroken: "Broken (BROKEN)",
+  sideBsl: "Buy-side liquidity",
+  sideSsl: "Sell-side liquidity",
+  stateSwept: "swept only",
+  stateBroken: "broken through",
 
   labelLevel: "Level",
   labelWickHigh: "Wick high",
@@ -174,12 +200,17 @@ const EN: AlertStrings = {
     if (side === "BSL") return broken ? "closed above the liquidity zone" : "closed back below the liquidity zone";
     return broken ? "closed below the liquidity zone" : "closed back above the liquidity zone";
   },
-  statement: ({ beyond, settled, timeframe, count, side }) =>
-    count > 1
-      ? `Price ${beyond} ${count} ${side} levels; the completed ${timeframe} candle ${settled}.`
-      : `Price ${beyond} the ${side}; the completed ${timeframe} candle ${settled}.`,
+  statement: ({ beyond, settled, timeframe, count, side }) => {
+    const who = side === "BSL" ? "buy-side liquidity" : "sell-side liquidity";
+    return count > 1
+      ? `Price ${beyond} ${count} ${who} levels; the completed ${timeframe} candle ${settled}.`
+      : `Price ${beyond} the ${who}; the completed ${timeframe} candle ${settled}.`;
+  },
   alsoOn: (tfs) => `also on ${tfs}`,
   touches: (n) => `${n} touch${n === 1 ? "" : "es"}`,
+  typeEqh: "Equal highs (EQH)",
+  typeEql: "Equal lows (EQL)",
+  equalLevelNote: (n) => `${n} swings at the same price`,
   unknownSession: "unknown session",
 };
 
@@ -259,6 +290,26 @@ export interface UiStrings {
   snapDistance: (pct: number) => string;
   snapNone: string;
   snapTakenHeading: string;
+
+  // ── Market state block (post-interaction state, see lib/smc/market-state.ts) ──
+  //
+  // The status TOKENS themselves (BREAKOUT_ACCEPTED, REVERSAL_CONFIRMED,
+  // BLOCKED, READY …) are deliberately NOT translated. They are the engine's own
+  // vocabulary, they appear in logs and in the report JSON, and they must read
+  // identically in every language. Only these labels are localised.
+  stateHeading: string;
+  stateFacts: string;
+  stateBreakout: string;
+  stateProtectedLow: string;
+  stateMss: string;
+  stateShortRead: string;
+  stateReason: string;
+  stateConfirmed: string;
+  stateNotConfirmed: string;
+  stateBroken: string;
+  stateIntact: string;
+  /** Closing line of the state block — the "this is not an instruction" note. */
+  stateDisclaimer: string;
 }
 
 const UI_ZH_TW: UiStrings = {
@@ -336,6 +387,18 @@ ACTIVE 必須由使用者明確開啟，不會自動啟動。`,
   snapDistance: (p) => `距 ${p.toFixed(2)}%`,
   snapNone: "（無）",
   snapTakenHeading: "近期已取走：",
+  stateHeading: "市場狀態",
+  stateFacts: "事實事件",
+  stateBreakout: "突破狀態",
+  stateProtectedLow: "多方保護低點",
+  stateMss: "結構轉變 MSS",
+  stateShortRead: "空方判讀",
+  stateReason: "原因",
+  stateConfirmed: "已確認",
+  stateNotConfirmed: "未確認",
+  stateBroken: "已跌破",
+  stateIntact: "未跌破",
+  stateDisclaimer: "（描述性資訊，非交易指令）",
 };
 
 const UI_ZH_CN: UiStrings = {
@@ -413,6 +476,18 @@ ACTIVE 必须由使用者明确开启，不会自动启动。`,
   snapDistance: (p) => `距 ${p.toFixed(2)}%`,
   snapNone: "（无）",
   snapTakenHeading: "近期已取走：",
+  stateHeading: "市场状态",
+  stateFacts: "事实事件",
+  stateBreakout: "突破状态",
+  stateProtectedLow: "多方保护低点",
+  stateMss: "结构转变 MSS",
+  stateShortRead: "空方判读",
+  stateReason: "原因",
+  stateConfirmed: "已确认",
+  stateNotConfirmed: "未确认",
+  stateBroken: "已跌破",
+  stateIntact: "未跌破",
+  stateDisclaimer: "（描述性信息，非交易指令）",
 };
 
 const UI_EN: UiStrings = {
@@ -490,6 +565,18 @@ ACTIVE must be enabled explicitly. It never starts on its own.`,
   snapDistance: (p) => `${p.toFixed(2)}% away`,
   snapNone: "(none)",
   snapTakenHeading: "Recently taken:",
+  stateHeading: "Market state",
+  stateFacts: "Fact",
+  stateBreakout: "Breakout status",
+  stateProtectedLow: "Protected higher low",
+  stateMss: "MSS",
+  stateShortRead: "Short read",
+  stateReason: "Reason",
+  stateConfirmed: "CONFIRMED",
+  stateNotConfirmed: "NOT CONFIRMED",
+  stateBroken: "broken",
+  stateIntact: "intact",
+  stateDisclaimer: "_Descriptive only — not a trade instruction._",
 };
 
 export const UI: Record<Language, UiStrings> = {

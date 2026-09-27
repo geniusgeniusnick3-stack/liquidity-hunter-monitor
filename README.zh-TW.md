@@ -6,6 +6,7 @@
 > 不做自動交易，不使用帳號 API。
 
 > **English version: [README.md](README.md)**
+> **簡體中文版：[README.zh-CN.md](README.zh-CN.md)**
 
 一個 24/7 可用的 SMC（Smart Money Concepts）流動性監控系統，改造自開源專案
 [`GdotAiM/SMC-Liquidity-Hunter`](https://github.com/GdotAiM/SMC-Liquidity-Hunter)，
@@ -204,6 +205,33 @@ ICT 縮寫（BSL／SSL／SWEPT／BROKEN）**在所有語言都保留英文**，�
 - **容忍度而非精確比對**：容忍度為 `ATR × 0.10`，經真實資料量測決定
   （BTC 的 4H ATR 約佔價格 1.10%，SUI 約 2.70%——固定百分比不可行）
 
+### 2b. 等高點／等低點（EQH / EQL）
+
+上游把每個轉折點各自算成一條水位，所以同一個價位被測試兩次時，輸出會出現兩條幾乎
+重疊的線——那不是兩個資訊，是同一個資訊被報了兩次。停損掛在**兩次嘗試的上方／下方**，
+所以那個區域的流動性比單一轉折點更厚。
+
+本專案把同價位的轉折點合併成一條，並在輸出標明：
+
+| 項目 | 規則 |
+|---|---|
+| 判定條件 | 兩個轉折點價差 ≤ `ATR × 0.25`（波動縮放，非固定百分比） |
+| 水位價位 | 取**極值**（最高高點／最低低點）——停損相對於兩次嘗試的位置就在那裡 |
+| 判定起點 | 取**最後一個**轉折點：圖形要等市場第二次失敗才成立 |
+| 觸及次數 | 每個成員各算一次，之後的觸及再往上加 |
+| 稽核 | 原始轉折點的價位與時間全部保留在 `equalLevelMembers` |
+
+兩條硬規則：
+
+- **已被取走的水位不參與配對**。若第一個高點早就被掃掉，它的停損已經被吃掉了，
+  再把它跟後面的高點配成一對，等於謊報那裡有兩層掛單——而且會把水位搬到插針尖端。
+- **叢集有界，不鏈式擴散**。成員一律與叢集的**極值**比較，不是跟前一個成員比較，
+  否則一串價格可以無限延伸成同一條水位。
+
+> **用語**：繁體中文的 SMC 教材寫「等高點／等低點」，簡體中文寫「等高点／等低点」。
+> 兩邊用詞相同、只差字形，因此三語系字串（`zh-TW` / `zh-CN` / `en`）都已對應加入。
+> 其他術語則確實有差（繁中「時框」對簡中「时间框」），翻譯時請各自依照當地用法，不要互抄。
+
 ### 3. 動態標的選擇
 
 不再硬編碼清單。從全球 528 個 USDT 永續中，依實際分布校準門檻：
@@ -340,6 +368,46 @@ npx tsx artifacts/api-server/src/scripts/explain-missing-level.ts BTCUSDT 1h 811
 
 ---
 
+## 市場狀態 — 突破是站住了，還是失敗了？
+
+`SWEPT` 與 `BROKEN` 描述的是**單一根**已收 K 棒：價格有沒有穿越這個價位、這根收在哪一側。那是事實，而且它刻意對後續發展保持沉默 —— 一個價位一旦 `BROKEN` 就永遠是 `BROKEN`，因為掃描遇到第一次被取走就停住了。
+
+於是真正該回答的問題被留下來沒答：買方流動性被取走之後，市場是**接受**了突破，還是突破**失敗**、開始累積反向的條件？
+
+`lib/smc/market-state.ts` 只回答這件事，不多答。三層刻意分開：
+
+| 層 | 回答什麼 | 用詞 |
+|---|---|---|
+| 事實 | 價格做了什麼 | `SWEPT` `BROKEN` `TOUCHED` |
+| 狀態 | 這件事留下什麼 | `BREAKOUT_ACCEPTED` `BREAKOUT_FAILURE_WATCH` `REVERSAL_CONFIRMED`（SSL 為鏡像） |
+| 判讀 | 人可以據此推論什麼 | `SHORT` `BLOCKED` `WATCH` `ARMED` `READY` |
+
+單幣查詢會同時顯示三層。**狀態代碼（token）不翻譯** —— 那是引擎的詞彙，在 log、JSON 與各語言之間必須讀起來完全一致；只有標籤在地化。
+
+這一層**不會**做的事：
+
+- **不會把「被掃」當成反轉。** `SWEPT` 的價位從來沒有收盤站到對側，沒有突破可以「接受」或「失敗」。
+- **不會把影線當成跌破。** 所有判斷都來自**已收 K 棒的收盤價**。
+- **不會把引擎的 `CHoCH` 當成做空確認。** `CHoCH` 只由 pivot 的順序產生 —— 沒有收盤、沒有價位、沒有位移 —— 所以它原封不動，另外新增一個定義嚴格的 confirmed MSS 並存。
+- **不會把所有未填滿的看跌 FVG 當訊號。** 只有在 confirmed MSS **之後**形成、且尚未失效的區塊才算數。
+- **不下單。** 本專案沒有任何下單路徑。
+
+### 兩段式掃描（漏斗）
+
+深入判斷需要結構、缺口與訂單塊；而這些只有在**已經有東西被取走**之後才有意義。所以掃描第一段跑全市場，第二段只跑近期真的被取走的地方：
+
+```
+第一段  全部幣 × 全部時框   analyzeLiquidity()                便宜
+閘門    hasRecentTake()      最近 24 根內有價位被取走
+第二段  只跑通過者          結構 + FVG + OB + 狀態層          貴
+```
+
+這個窗口不是隨便定的。突破的「接受」需要 K 棒累積：如果在被取走後只隔一根就判斷，每個價位都只可能是「剛被掃過」，`BREAKOUT_ACCEPTED` 根本不可能被觀察到。
+
+預設開啟。`config.yaml → market_state.enabled: false` 可完全退回先前行為。
+
+---
+
 ## 快速開始
 
 ### 需求
@@ -384,15 +452,29 @@ npx tsx artifacts/api-server/src/scripts/live-snapshot.ts --symbols BTCUSDT --ti
 
 ### 測試
 
+**986 項斷言通過、0 項失敗**，涵蓋全部 21 個測試檔：
+
 ```bash
-# 全部測試：486 項
-npx tsx artifacts/api-server/src/lib/smc/liquidity-interaction.test.ts
-npx tsx artifacts/api-server/src/lib/events/deduplicator.test.ts
-npx tsx artifacts/api-server/src/lib/notify/formatters.test.ts
-npx tsx artifacts/api-server/src/lib/persistence/liquidity-store.test.ts
-npx tsx artifacts/api-server/src/scripts/telegram-bot.test.ts
-# 加上上游原有的 7 個引擎模組測試（302 項）
+for f in $(find artifacts/api-server/src -name "*.test.ts" | sort); do npx tsx "$f"; done
 ```
+
+較大的幾組，方便抽查：
+
+```bash
+npx tsx artifacts/api-server/src/lib/smc/market-state.test.ts             # 65
+npx tsx artifacts/api-server/src/lib/smc/liquidity-interaction.test.ts    # 31
+npx tsx artifacts/api-server/src/lib/smc/order-blocks.test.ts            # 100
+npx tsx artifacts/api-server/src/lib/notify/formatters.test.ts            # 84
+npx tsx artifacts/api-server/src/lib/persistence/liquidity-store.test.ts  # 43
+npx tsx artifacts/api-server/src/scripts/telegram-bot.test.ts             # 22
+```
+
+> 本節先前寫「全部測試：486 項（本專案新增 185 項 + 上游引擎 302 項）」。那個數字
+> 與實際套件不符，拆分也無法重現。上面的數字是**實測**結果，且每次新增測試都要重新
+> 量——所以這裡把指令寫出來，而不是要讀者相信一個總數。
+
+另外：CI 只跑 typecheck 與 build，**從未跑過這套測試**。這是真實的缺口，寫出來而不是
+含糊帶過。
 
 ---
 
