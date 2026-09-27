@@ -18,6 +18,7 @@ import path from "node:path";
 import { runScan } from "../lib/scan/ScanEngine.js";
 import { telegramNotifier } from "../lib/notify/TelegramNotifier.js";
 import { uiFor } from "../lib/notify/i18n.js";
+import { loadFixtureCandleSource } from "../lib/scan/fixture-candles.js";
 
 (function loadEnv(): void {
   const envPath = path.resolve(process.cwd(), ".env");
@@ -54,7 +55,12 @@ function fmtTime(seconds: number): string {
 }
 
 async function main(): Promise<void> {
+  // Replay a recording instead of fetching, when one is named. Used by the
+  // mode-parity gate so both entry points see byte-identical input — see
+  // lib/scan/fixture-candles.ts.
+  const fixture = loadFixtureCandleSource();
   const result = await runScan({
+    ...(fixture ? { candleSource: fixture.source, candleClosure: fixture.closure } : {}),
     symbols: explicitSymbols,
     timeframes: onlyTimeframe ? [onlyTimeframe] : undefined,
     // A scan someone asked for reports the current state in full. Dedup belongs

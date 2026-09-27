@@ -1,6 +1,7 @@
 import { EventEmitter } from "events";
 import { logger } from "../logger.js";
 import type { Candle } from "../smc/types.js";
+import { admitCandles } from "../smc/candles.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────────
 
@@ -52,19 +53,13 @@ export class CandleStore extends EventEmitter {
       // Kline finalized — move from open → closed
       this.openCandle.delete(key);
 
-      const closedList = this.closed.get(key) ?? [];
-      // Replace or append
-      const existingIdx = closedList.findIndex((c) => c.time === candle.time);
-      if (existingIdx >= 0) {
-        closedList[existingIdx] = candle;
-      } else {
-        closedList.push(candle);
-        // Keep sorted
-        closedList.sort((a, b) => a.time - b.time);
-        // Trim
-        while (closedList.length > this.maxCandles) closedList.shift();
+      // Replace-or-append, through the store's single writer.
+      if (!this.commit(key, [candle], { replaceExisting: true })) {
+        // Refused at admission. The write is skipped AND "candleClosed" is not
+        // emitted: firing it on a row we just rejected would hand a listener
+        // exactly the data the gate exists to keep out.
+        return;
       }
-      this.closed.set(key, closedList);
 
       this.emit("candleClosed", { symbol: update.symbol, timeframe: update.timeframe, candle });
     } else {
@@ -159,30 +154,73 @@ export class CandleStore extends EventEmitter {
     if (candles.length === 0) return;
 
     const key = this.key(symbol, timeframe);
-    const existing = this.closed.get(key) ?? [];
-    const existingTimes = new Set(existing.map((c) => c.time));
+    const before = (this.closed.get(key) ?? []).length;
 
-    // Merge: add new candles not already present
-    const merged = [...existing];
-    for (const c of candles) {
-      if (!existingTimes.has(c.time)) {
-        merged.push(c);
-      }
-    }
-
-    // Sort and trim
-    merged.sort((a, b) => a.time - b.time);
-    while (merged.length > this.maxCandles) merged.shift();
-
-    this.closed.set(key, merged);
+    // Same writer as the live path. This entry point is why guarding only
+    // applyUpdate() was not enough: it is a SECOND door into `closed` (REST
+    // backfill for forex), so the invariant "nothing malformed reaches `closed`"
+    // was only as strong as the weaker of the two doors. The gate now lives
+    // behind a single function that both doors call.
+    this.commit(key, candles, { replaceExisting: false });
     this.activeSymbols.add(symbol);
 
+    const after = (this.closed.get(key) ?? []).length;
     logger.info({
       symbol,
       timeframe,
-      added: merged.length - existing.length,
-      total: merged.length,
+      added: after - before,
+      total: after,
     }, "Candle store seeded from historical backfill");
+  }
+
+  /**
+   * The ONLY function that writes to `closed`. Both doors call it.
+   *
+   * Runs the shared admission gate (see lib/smc/candles.ts) on every incoming
+   * row before anything is archived, then merges. `replaceExisting` distinguishes
+   * the two callers: the live path replaces a bar it has seen before (a
+   * finalised kline supersedes any earlier copy), while a REST backfill only
+   * fills gaps and must not overwrite what the live stream already settled.
+   *
+   * Closure is "proven" by construction at both doors: the live path only sets
+   * `isClosed` once the provider finalised the bar, and the backfill reads
+   * finished history.
+   *
+   * Returns false when NOTHING was admitted, so the caller can skip its
+   * downstream effects (the live path must not emit `candleClosed`).
+   */
+  private commit(
+    key: string,
+    incoming: Candle[],
+    opts: { replaceExisting: boolean },
+  ): boolean {
+    const admission = admitCandles(incoming, {
+      closure: "proven",
+      nowSeconds: Date.now() / 1000,
+      minCandles: 0,
+    });
+    if (admission.rejected.length > 0) {
+      logger.warn(
+        { key, rejected: admission.rejected.slice(0, 5) },
+        "Candle store rejected row(s) at admission",
+      );
+    }
+    if (admission.candles.length === 0) return false;
+
+    const closedList = this.closed.get(key) ?? [];
+    for (const c of admission.candles) {
+      const idx = closedList.findIndex((x) => x.time === c.time);
+      if (idx >= 0) {
+        if (opts.replaceExisting) closedList[idx] = c;
+      } else {
+        closedList.push(c);
+      }
+    }
+
+    closedList.sort((a, b) => a.time - b.time);
+    while (closedList.length > this.maxCandles) closedList.shift();
+    this.closed.set(key, closedList);
+    return true;
   }
 
   /** Return a report of what's being tracked */

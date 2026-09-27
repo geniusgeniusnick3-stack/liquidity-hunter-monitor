@@ -29,7 +29,8 @@ export function registerDrawTargetsTool(server: FastMCP): void {
           return { content: [{ type: "text", text: `Insufficient candle data for ${sym} ${timeframe}` }] };
         }
 
-        const report = buildReport(candles, sym, market, timeframe);
+        // candleStore.getCandles() returns only closed candles.
+        const report = buildReport(candles, sym, market, timeframe, { closureEvidence: "proven" });
 
         return {
           content: [{

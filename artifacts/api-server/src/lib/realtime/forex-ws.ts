@@ -10,6 +10,7 @@
  */
 
 import WebSocket from "ws";
+import { admitCandles } from "../smc/candles.js";
 import https from "https";
 import { logger } from "../logger.js";
 import { candleStore, type CandleUpdate } from "./candle-store.js";
@@ -315,10 +316,25 @@ class ForexWsManager {
   }
 
   private async fetchCandles(symbol: string, tf: string): Promise<Candle[]> {
+    // Every branch below returns through the gate — see lib/smc/candles.ts.
+    //
+    // Finnhub builds Candles from its own JSON payload, so it is a PRODUCER, not
+    // a pass-through. Its output also reaches the store (and would therefore be
+    // gated there), but relying on a downstream guard makes correctness depend on
+    // who happens to call this next: that transitive reasoning is exactly what let
+    // two other doors stay open. The rule is per-PRODUCER, so it is applied here
+    // where the data is made rather than where it lands.
+    const admit = (candles: Candle[]): Candle[] =>
+      admitCandles(candles, {
+        closure: "unprovable",
+        nowSeconds: Math.floor(Date.now() / 1000),
+        minCandles: 0,
+      }).candles;
+
     if (this.apiKey) {
       try {
         const finnhubResult = await this.fetchFinnhubCandles(symbol, tf);
-        if (finnhubResult.length > 0) return finnhubResult;
+        if (finnhubResult.length > 0) return admit(finnhubResult);
         logger.debug({ symbol, tf }, "Finnhub REST returned no candles, falling back to Yahoo");
       } catch (err) {
         // Finnhub REST failed (network error, rate limit, premium-only endpoint, etc.) —
@@ -326,8 +342,10 @@ class ForexWsManager {
         logger.debug({ err, symbol, tf }, "Finnhub REST failed, falling back to Yahoo");
       }
     }
-    // No API key, or Finnhub returned empty/errored — use Yahoo REST (always available, free)
-    return fetchYahooCandles(symbol, tf);
+    // No API key, or Finnhub returned empty/errored — use Yahoo REST (always available, free).
+    // That path is already gated inside fetchYahooCandles; admitting again is
+    // idempotent and keeps this function's exit uniform.
+    return admit(await fetchYahooCandles(symbol, tf));
   }
 
   private async fetchFinnhubCandles(symbol: string, tf: string): Promise<Candle[]> {

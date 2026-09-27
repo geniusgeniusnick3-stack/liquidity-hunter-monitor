@@ -113,8 +113,11 @@ router.post("/signals/generate", async (req, res) => {
         ? await fetchBinanceCandles(symbol as string, tf)
         : await fetchYahooCandles(symbol as string, tf);
 
-    // Run SMC analysis
-    const report = buildReport(candles, symbol as string, mkt, tf);
+    // Run SMC analysis. Only the Binance branch can prove its last bar closed;
+    // the Yahoo branch cannot, so it keeps the fail-closed default.
+    const report = buildReport(candles, symbol as string, mkt, tf, {
+      closureEvidence: mkt === "crypto" ? "proven" : "unprovable",
+    });
 
     // Generate signal
     const signal = signalGenerator.generateFromReport(report, mkt, {

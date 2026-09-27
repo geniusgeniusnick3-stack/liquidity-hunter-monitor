@@ -70,6 +70,9 @@ router.get("/analysis/crypto", async (req, res): Promise<void> => {
 
     const report = buildReport(candles, symbol, "crypto", tf, {
       dailyCandles,
+      // fetchBinanceCandles → fetchKlines, which drops the forming bar by close
+      // time. The last bar here is therefore provably finished.
+      closureEvidence: "proven",
       correlatedCandles: correlatedCandles ?? undefined,
       primarySymbol: symbol,
       correlatedSymbol: corrSym,

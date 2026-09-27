@@ -3,7 +3,7 @@
  * Used to confirm what a user sees for /scan SYMBOL TF before it ships.
  */
 import { runScan } from "../lib/scan/ScanEngine.js";
-import { formatScanReply } from "../lib/notify/formatters.js";
+import { formatScanReply, toReplyMarketState } from "../lib/notify/formatters.js";
 import type { Language } from "../lib/notify/i18n.js";
 
 const symbol = (process.argv[2] ?? "TRXUSDT").toUpperCase();
@@ -22,7 +22,14 @@ for (const lang of ["zh-TW", "zh-CN", "en"] as Language[]) {
     scope: `${symbol} ${tf.toUpperCase()}`,
     events: r.events, approaches: r.approaches, historySkipped: r.historySkipped,
     symbolCount: r.symbolCount, latestCandleTime: r.latestCandleTime,
-    scanned: r.scanned, failures: r.failures, snapshots: r.snapshots,
+    scanned: r.scanned, failures: r.failures,
+    snapshots: r.snapshots.map((s) => ({
+      ...s,
+      marketState: s.marketState ? toReplyMarketState(s.marketState) : null,
+    })),
+    marketStates: r.marketStates.map((m) => ({
+      symbol: m.symbol, timeframe: m.timeframe, state: toReplyMarketState(m.state),
+    })),
   }, lang));
   console.log("");
 }

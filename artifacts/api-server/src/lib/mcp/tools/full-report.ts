@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { FastMCP } from "fastmcp";
 import { candleStore } from "../../realtime/candle-store.js";
 import { buildReport } from "../../smc/report.js";
+import { marketStateSummary } from "../../smc/market-state.js";
 import { fetchBinanceDailyCandles } from "../../fetchers/binance.js";
 import { fetchYahooDailyCandles } from "../../fetchers/yahoo.js";
 import { logger } from "../../logger.js";
@@ -41,7 +42,11 @@ export function registerFullReportTool(server: FastMCP): void {
             : await fetchYahooDailyCandles(sym);
         } catch { /* fallback */ }
 
-        const report = buildReport(candles, sym, market, timeframe, { dailyCandles });
+        // candleStore.getCandles() returns only closed candles.
+        const report = buildReport(candles, sym, market, timeframe, {
+          dailyCandles,
+          closureEvidence: "proven",
+        });
         logger.info({ tool: "build_full_report", symbol, timeframe, durationMs: Date.now() - start }, "MCP tool executed");
 
         return {
@@ -98,6 +103,10 @@ export function registerFullReportTool(server: FastMCP): void {
                 consecutiveDays: report.dailyBias.consecutiveDays,
               },
               smt: { detected: report.smt.detected, type: report.smt.type },
+              // Post-interaction state (breakout acceptance / failure, protected
+              // swing, confirmed MSS, short read). Previously this tool mapped a
+              // subset of the report and silently dropped the field.
+              marketState: marketStateSummary(report.marketState),
               topDraws: report.draw.slice(0, 3).map(d => ({
                 type: d.type, price: d.price, direction: d.direction,
                 score: Math.round(d.score * 100) / 100, label: d.label,

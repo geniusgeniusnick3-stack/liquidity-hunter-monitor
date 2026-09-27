@@ -51,6 +51,8 @@ candleStore.on("candleClosed", async (evt: { symbol: string; timeframe: string; 
     // Rebuild the full SMC report from fresh candles
     const report = buildReport(candles, symbol, market, timeframe, {
       dailyCandles,
+      // candleStore.getCandles() returns only closed candles.
+      closureEvidence: "proven",
     });
 
     // Pre-warm the REST cache so the next poll returns this fresh report

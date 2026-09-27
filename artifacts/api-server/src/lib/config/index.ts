@@ -15,6 +15,7 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { logger } from "../logger.js";
 import { normaliseLanguage } from "../notify/i18n.js";
+import { SMC_CONFIG } from "../smc/config.js";
 
 // ── Schema ──────────────────────────────────────────────────────────────────
 
@@ -56,6 +57,28 @@ const EligibilitySchema = z.object({
 
 const MonitoringModeSchema = z.enum(["passive", "active"]);
 
+/**
+ * Post-interaction market state layer (see lib/smc/market-state.ts).
+ *
+ * `enabled` is the escape hatch: the layer adds structure / FVG / order-block
+ * analysis on top of the liquidity scan, so it can be switched off if a scan
+ * ever needs to be as cheap as it was before.
+ *
+ * `screening_lookback_bars` is the funnel width — only a level taken within this
+ * many completed bars is investigated in depth. It must be at least the
+ * acceptance run the layer looks for, or acceptance could never be observed;
+ * that is why it is validated here rather than believed.
+ */
+const MarketStateSchema = z
+  .object({
+    enabled: z.boolean(),
+    screening_lookback_bars: z.number().int().positive(),
+  })
+  .refine((v) => v.screening_lookback_bars >= 2, {
+    message:
+      "screening_lookback_bars must be >= 2, otherwise a taken level can never accumulate the closes that acceptance needs",
+  });
+
 const ConfigSchema = z.object({
   monitoring: z.object({
     mode: MonitoringModeSchema,
@@ -87,6 +110,7 @@ const ConfigSchema = z.object({
     region_tolerance_pct: z.number().nonnegative(),
     region_lookback_days: z.number().positive(),
   }),
+  market_state: MarketStateSchema,
   alert_thresholds: z.object({
     approaching_distance_pct: z.number().positive(),
     broken_close_buffer_bps: z.number().nonnegative(),
@@ -211,6 +235,15 @@ export function loadConfig(options?: { force?: boolean }): AppConfig {
     }
     cfg.notifications.language = normalised;
   }
+
+  // ── Market-state master switch ───────────────────────────────────────────
+  //
+  // Published into SMC_CONFIG because the state layer is not only reached
+  // through `runScan()`: `buildReport()` is called directly by MCP tools, REST
+  // routes, the realtime bridge and the backtest runner, none of which load this
+  // config themselves. Keeping the flag here means one setting governs all of
+  // them instead of only the scan path.
+  SMC_CONFIG.marketStateEnabled = cfg.market_state.enabled;
 
   if (cfg.monitoring.mode === "active") {
     logger.warn(

@@ -38,6 +38,36 @@ function maskChatId(id: string): string {
   return id.slice(0, 2) + "***" + id.slice(-2);
 }
 
+/**
+ * Telegram rejects a message longer than 4096 characters. The failure surfaces as
+ * an API error, which on a busy scan means the whole report is lost — not
+ * truncated. Leave a margin and split instead.
+ */
+const TELEGRAM_MAX_CHARS = 4000;
+
+/**
+ * Split a long message on line boundaries, preferring a blank line, then a single
+ * newline, and only cutting mid-line as a last resort. Never returns an empty
+ * chunk, so a pathological input cannot produce a zero-progress loop.
+ */
+export function splitForTelegram(text: string, limit = TELEGRAM_MAX_CHARS): string[] {
+  if (text.length <= limit) return [text];
+
+  const chunks: string[] = [];
+  let rest = text;
+
+  while (rest.length > limit) {
+    const window = rest.slice(0, limit);
+    let cut = window.lastIndexOf("\n\n");
+    if (cut <= 0) cut = window.lastIndexOf("\n");
+    if (cut <= 0) cut = limit;            // no line break available
+    chunks.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest.length > 0) chunks.push(rest);
+  return chunks;
+}
+
 export class TelegramNotifier {
   private sent = 0;
   private failed = 0;
@@ -70,6 +100,27 @@ export class TelegramNotifier {
     if (!enabled) {
       logger.debug("Telegram disabled by config — message not sent");
       return { ok: false, skipped: true, attempts: 0 };
+    }
+
+    // Over the API limit → send in order as several messages. Done before the
+    // credential check so the behaviour is the same however it is configured.
+    // Each chunk is short, so the recursion terminates after one level.
+    if (text.length > TELEGRAM_MAX_CHARS) {
+      const chunks = splitForTelegram(text);
+      logger.info({ chunks: chunks.length, chars: text.length }, "Telegram message split to fit the API limit");
+      let ok = true;
+      let attempts = 0;
+      let lastError: string | undefined;
+      for (const chunk of chunks) {
+        const r = await this.send(chunk, options);
+        attempts += r.attempts ?? 0;
+        if (!r.ok) {
+          ok = false;
+          lastError = r.error;
+          if (!r.skipped) break;           // a real failure: stop rather than spam
+        }
+      }
+      return { ok, attempts, ...(lastError ? { error: lastError } : {}) };
     }
 
     const token = this.token;

@@ -6,6 +6,7 @@ import { forexWs } from "./lib/realtime/forex-ws.js";
 import "./lib/realtime/analysis-bridge.js";
 import { createSmcMcpServer } from "./lib/mcp/index.js";
 import { TradeSettlementService } from "./lib/services/TradeSettlementService.js";
+import { loadConfig } from "./lib/config/index.js";
 
 const rawPort = process.env["PORT"];
 
@@ -20,6 +21,15 @@ const port = Number(rawPort);
 if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
+
+// Resolve the configuration BEFORE anything else starts.
+//
+// `loadConfig()` throws on a missing file, malformed YAML or a schema violation.
+// This is the only place that has to call it for that to mean something: every
+// other reader takes the switch from the already-parsed config, so an operator
+// typo must stop the process HERE rather than silently fall back to a default at
+// report time. See the blueprint's failure semantics.
+loadConfig();
 
 const server = app.listen(port, (err) => {
   if (err) {

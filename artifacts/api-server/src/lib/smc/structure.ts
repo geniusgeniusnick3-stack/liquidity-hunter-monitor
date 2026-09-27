@@ -23,6 +23,7 @@ function findPivots(
   candles: Candle[],
   atr: number[],
   lookback: number,
+  noiseAtrMultiple: number,
 ): { highs: number[]; lows: number[] } {
   const highs: number[] = [];
   const lows: number[] = [];
@@ -30,7 +31,12 @@ function findPivots(
 
   for (let i = lookback; i < n - lookback; i++) {
     const c = candles[i];
-    const noise = atr[i] * 0.5;
+    // How far the bar must stand out from its neighbours. Zero means "just be the
+    // extreme", which is what the standard implementations do (see the note on
+    // SMC_CONFIG.pivotNoiseAtrMultiple). A non-zero value is a prominence filter,
+    // and any such filter drops the newest swing first — the one price is pressing
+    // into — which is how the report came to quote old levels as current ones.
+    const noise = atr[i] * noiseAtrMultiple;
 
     let isHigh = true;
     let isLow  = true;
@@ -167,7 +173,7 @@ export function analyzeStructure(candles: Candle[], timeframe = "4h"): Structure
   const atrPeriod     = SMC_CONFIG.atrPeriodPerTf[timeframe]     ?? SMC_CONFIG.atrPeriod;
 
   const atr = calcATR(candles, atrPeriod);
-  const { highs, lows } = findPivots(candles, atr, pivotLookback);
+  const { highs, lows } = findPivots(candles, atr, pivotLookback, SMC_CONFIG.pivotNoiseAtrMultiple);
 
   const pivots: StructurePoint[] = [];
   const breaks: StructureBreak[] = [];

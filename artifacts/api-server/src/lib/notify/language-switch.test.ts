@@ -92,20 +92,20 @@ console.log("切換後訊息真的改變（不需重啟）");
 
   const before = formatApproaching(alert, resolveLanguage(configLang, store.read).language);
   ok(before.includes("【流動性接近】"), "切換前：繁中");
-  ok(before.includes("買方流動性"), "切換前：繁中用「買方流動性」");
+  ok(before.includes("上方流動性"), "切換前：繁中用「上方流動性」");
 
   // 模擬使用者下 /language zh-CN
   store.write("zh-CN");
   const afterCn = formatApproaching(alert, resolveLanguage(configLang, store.read).language);
   ok(afterCn.includes("【流动性接近】"), "切換後：簡中標題");
-  ok(afterCn.includes("买方流动性"), "切換後：簡中用「买方流动性」");
+  ok(afterCn.includes("上方流动性"), "切換後：簡中用「上方流动性」");
   ok(!afterCn.includes("流動性接近"), "切換後：不再出現繁中字樣");
 
   // 再切英文
   store.write("en");
   const afterEn = formatApproaching(alert, resolveLanguage(configLang, store.read).language);
   ok(afterEn.includes("[Liquidity Approaching]"), "再切換：英文標題");
-  ok(afterEn.includes("Buy-Side Liquidity (BSL)"), "再切換：英文用 Buy-Side Liquidity");
+  ok(afterEn.includes("Buy-side liquidity"), "再切換：英文用 Buy-side liquidity（不帶代號）");
   ok(!afterEn.includes("流動性"), "再切換：不再出現中文");
 
   // 三種語言的實際輸出都不一樣

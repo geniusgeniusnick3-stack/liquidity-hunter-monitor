@@ -69,7 +69,7 @@ async function main(): Promise<void> {
 
     if (candles.length < 50) { out("     ⚠️ 資料不足，跳過引擎"); continue; }
 
-    const report = buildReport(candles, sym, "crypto", "4h", { dailyCandles: daily });
+    const report = buildReport(candles, sym, "crypto", "4h", { dailyCandles: daily, closureEvidence: "proven" });
     out(`     價格 ${report.currentPrice}`);
     out(`     結構 ${report.structure.trend} / ${report.structure.bias}（信心 ${report.structure.confidence.toFixed(2)}）phase=${report.structure.phase}`);
     out(`     流動性池 ${report.liquidity.pools.length} 個 | OB ${report.orderBlocks.length} | FVG ${report.fvg.length} | draw ${report.draw.length}`);

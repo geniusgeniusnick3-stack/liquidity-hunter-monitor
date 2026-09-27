@@ -41,6 +41,7 @@ import { candleCache, nextCandleClose, TF_MS } from "../lib/market/CandleCache.j
 import { telegramNotifier } from "../lib/notify/TelegramNotifier.js";
 import { uiFor } from "../lib/notify/i18n.js";
 import { logger } from "../lib/logger.js";
+import { loadFixtureCandleSource } from "../lib/scan/fixture-candles.js";
 
 (function loadEnv(): void {
   const envPath = path.resolve(process.cwd(), ".env");
@@ -158,6 +159,14 @@ async function main(): Promise<void> {
         // at once, which is what keeps a large universe inside rate limits.
         concurrency: config.monitoring.active_concurrency,
         candleSource: (symbol, tf, limit) => candleCache.get(symbol, tf, limit),
+        // A fixture, when one is named, OVERRIDES the cache so both entry points
+        // are judged on identical input — see lib/scan/fixture-candles.ts.
+        ...(loadFixtureCandleSource()
+          ? (() => {
+              const f = loadFixtureCandleSource()!;
+              return { candleSource: f.source, candleClosure: f.closure };
+            })()
+          : {}),
         onLog: (m) => logger.info({}, m),
       });
       scans++;

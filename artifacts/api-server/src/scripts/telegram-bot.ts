@@ -321,7 +321,7 @@ async function runScanner(
   opts: { symbols?: string[]; timeframe?: string; send: boolean; echoToChat?: boolean },
 ): Promise<string> {
   const { runScan } = await import("../lib/scan/ScanEngine.js");
-  const { formatScanReply } = await import("../lib/notify/formatters.js");
+  const { formatScanReply, toReplyMarketState } = await import("../lib/notify/formatters.js");
   const { telegramNotifier } = await import("../lib/notify/TelegramNotifier.js");
 
   const t = ui();
@@ -358,7 +358,18 @@ async function runScanner(
     failures: result.failures,
     // For a single symbol the reply becomes the standing picture rather than an
     // event list, which is what "how is TRXUSDT doing?" actually asks.
-    snapshots: result.snapshots,
+    snapshots: result.snapshots.map((s) => ({
+      ...s,
+      marketState: s.marketState ? toReplyMarketState(s.marketState) : null,
+    })),
+    // Depth results, already narrowed by the funnel to the symbol/timeframes
+    // where something was actually taken. Empty here means nothing was taken,
+    // not that the scan failed.
+    marketStates: result.marketStates.map((m) => ({
+      symbol: m.symbol,
+      timeframe: m.timeframe,
+      state: toReplyMarketState(m.state),
+    })),
   }, result.language);
 
   if (opts.echoToChat) {

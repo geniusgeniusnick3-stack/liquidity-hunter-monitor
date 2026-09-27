@@ -378,6 +378,150 @@ The session state is displayed as a badge in the dashboard header and Intelligen
 
 ---
 
+## 14. Market State — Breakout Acceptance, Protected Swing, Confirmed MSS
+
+*Implementation: `smc/market-state.ts`. Facts from the engine; state derived from
+the candles the engine already classified. Nothing here predicts a price, and
+nothing here can place an order — this project has no order path.*
+
+### Why this exists
+
+`analyzeLiquidity()` answers one question per level about ONE completed candle:
+did price trade beyond this level, and where did that candle close? That yields
+SWEPT and BROKEN, and the walk stops at the first take — so a level that is
+BROKEN stays BROKEN forever.
+
+That is correct for what it measures, and useless for the question that follows:
+after buy-side liquidity goes, did the market **accept** the breakout, or did the
+breakout **fail** and start building the case for the other direction? One candle
+cannot answer that. Only the candles after it can.
+
+### Three layers, kept apart on purpose
+
+| Layer | Answers | Vocabulary |
+|---|---|---|
+| **Fact** | what price did | `SWEPT` `BROKEN` `TOUCHED` `FVG` `OB` `BOS` `CHoCH` |
+| **State** | what that leaves behind | `BREAKOUT_ACCEPTED` `BREAKOUT_FAILURE_WATCH` `REVERSAL_CONFIRMED` (+ SSL mirrors) |
+| **Read** | what a human may infer | `SHORT` `BLOCKED` `WATCH` `ARMED` `READY` |
+
+Blurring the layers is how a monitor starts reading like a forecast. `SHORT
+READY` means "the evidence a short read needs is now present" — not "price will
+fall", and not "place an order".
+
+### Breakout acceptance machine (`runAcceptance`)
+
+Replays the completed closes after a take, one candle at a time:
+
+| Candle | Effect |
+|---|---|
+| close clearly outside the level (per-candle ATR tolerance) | extends the acceptance run |
+| close back on the original side | acceptance run resets; a taken level becomes a FAILURE |
+| neither (inside the tolerance band) | indecision — neither extends nor resets |
+
+A failure is not permanent: if price closes outside again for `acceptance_bars`
+candles, the level reads as ACCEPTED once more. The state always describes the
+**latest** close, never a verdict frozen at the moment of the break.
+
+`SWEPT` yields no breakout state at all — price never closed beyond the level, so
+there is nothing to accept or fail. A sweep alone is never treated as a reversal.
+
+### Protected swing (`findProtectedSwing`)
+
+Reads `StructureResult.pivots`, **not** `StructureResult.breaks`. The engine's
+BOS/CHoCH events are generated from pivot ORDER alone and are tied to no close,
+so they cannot answer "was this swing actually broken?" — only the candles can.
+
+`HL` = the bullish protected low an uptrend is defending. `LH` = the bearish
+mirror. "Broken" means a **completed close** through it; a wick is not a break,
+for the same reason a wick is not acceptance anywhere in this codebase.
+
+### Confirmed MSS (`evaluateMss`) — deliberately NOT the engine's CHoCH
+
+The engine emits a bearish `CHoCH` the moment a lower-high pivot exists. That is
+a structural observation and it is left exactly as it is: it requires no close,
+no level and no displacement, so treating it as a short confirmation would read
+far more into it than it says.
+
+A **confirmed** MSS requires ALL of:
+
+1. structure of the opposite kind existed before the swing being defended
+2. a valid protected swing (a higher low for bearish, a lower high for bullish)
+3. a **completed candle closed** beyond it
+4. the close cleared it by more than an ATR tolerance
+5. that candle showed **displacement** — body/range and body/ATR floors
+
+Every unmet requirement is reported in `blockers`, so a rejection explains itself
+instead of leaving the reader to guess which gate it failed.
+
+### Short read (`evaluateShortStatus`)
+
+Precedence `READY > ARMED > WATCH > BLOCKED > NONE` — the ordering is the point.
+BLOCKED is the default state of the world; it takes a specific sequence to leave
+it.
+
+| Status | Requires |
+|---|---|
+| `BLOCKED` | breakout still accepted · or HTF bias still bullish · or protected low not closed through · or sweep only · or no reversal evidence |
+| `WATCH` | the breakout failed (a completed close returned inside), but no confirmed bearish MSS yet |
+| `ARMED` | failure + confirmed bearish MSS + displacement + a **fresh** bearish FVG/OB formed after the MSS |
+| `READY` | ARMED, and that zone was retested **without invalidating**, with a bearish reaction |
+
+A "fresh" zone is one formed AFTER the confirmed MSS and not yet invalidated.
+Requiring that is what stops the layer from treating every unfilled bearish FVG
+in the window as a short signal.
+
+### FVG / OB lifecycle
+
+Existing fields (`fillFraction`, `isInversion`, `valid`, `isMitigated`) are
+untouched. The state layer returns **enriched copies** with six more:
+
+| Field | Meaning |
+|---|---|
+| `createdAfterMss` | formed after a confirmed MSS in the same direction |
+| `firstRetestAt` | first completed candle that traded back into the zone |
+| `retestCount` | how many completed candles have traded back into it |
+| `invalidatedAt` | a completed close went through the far edge — the zone no longer stands |
+| `isFresh` | never retested, never invalidated |
+| `reactionConfirmed` | after a retest, a completed close left the zone on the expected side |
+
+`invalidatedAt` and `reactionConfirmed` are kept distinct: one says the zone
+broke, the other says it was defended. A reaction is only credited **after** a
+retest, so a zone price never returned to cannot claim one.
+
+### The funnel: two-stage scan
+
+Stage 2 needs structure, gaps and blocks; those only mean something once
+something WAS taken. So the scan runs depth only where the funnel lets it:
+
+```
+stage 1  every symbol × timeframe   →  analyzeLiquidity()          (cheap)
+gate     hasRecentTake()            →  a take within screening_lookback_bars (24)
+stage 2  passing pairs only         →  structure + FVG + OB + state (expensive)
+```
+
+A caller who named a symbol skips the gate — they already said which one they
+care about, and answering a direct question with an empty state would be
+unhelpful.
+
+The window is expressed in **time** (`screening_lookback_bars × timeframe
+seconds`), not bar counts: illiquid alts have candle gaps, and bar arithmetic
+would silently reach further back than the 24 bars a reader expects.
+
+Note the gate exists because acceptance needs candles to accumulate. Judged one
+candle after a take, every level can only ever be "swept so far" — acceptance
+could never be observed at all.
+
+### Provenance of the thresholds
+
+The numbers in `SMC_CONFIG.marketState` are **provisional and configurable, not
+claimed to be optimal**. `liquidityToleranceAtrMultiple` was calibrated against a
+measured distribution of 139 live levels; no such measurement exists for this
+layer yet, and saying otherwise would be a guess dressed up as a measurement.
+They are chosen to be conservative — a state change needs more than one candle of
+evidence.
+
+---
+
 ## Configuration Reference (`config.ts`)
 
 | Parameter | Value | Purpose |
@@ -392,3 +536,17 @@ The session state is displayed as a badge in the dashboard header and Intelligen
 | `sessionWeights.overlap` | 1.5× | London/NY overlap pools get highest weighting |
 | `maxCandles` | 300 | Maximum OHLCV bars fetched per request |
 | `maxDailyCandles` | 60 | Daily bars fetched for HTF bias |
+| `liquidityToleranceAtrMultiple` | 0.10 | ATR multiple for SWEPT/BROKEN/TOUCHED (§5). **Not** read from `config.yaml` — see the note in `config.ts` |
+| `recentTakeWindowSeconds` | 14400 (4h) | How recent a take must be for the narrative to call it fresh (§13) |
+| `marketState.screening_lookback_bars` | 24 | Funnel width — depth runs only where a take is this recent |
+| `marketState.acceptance_bars` | 2 | Consecutive closes outside the level needed to call it accepted |
+| `marketState.breakout_atr_multiple` | 0.10 | Minimum ATR multiple beyond the level for a close to count as "outside" |
+| `marketState.mss_break_atr_multiple` | 0.10 | Minimum ATR multiple beyond a protected swing for a break to count |
+| `marketState.mss_min_body_ratio` | 0.5 | Displacement floor (body ÷ range) on the breaking candle |
+| `marketState.mss_min_body_atr_multiple` | 0.6 | Displacement floor (body ÷ ATR) on the breaking candle |
+| `marketState.mss_lookback_bars` | 24 | Only an MSS this recent counts as the current read |
+| `marketState.retest_tolerance_atr_multiple` | 0.05 | ATR multiple for deciding a gap/block was traded back into |
+
+`market_state.enabled` and `market_state.screening_lookback_bars` in `config.yaml`
+override the first of these at startup; the rest are engine-level, alongside
+`fvgMinBodyRatio` and the other analysis constants.

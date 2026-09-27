@@ -15,6 +15,7 @@ import { analyzePdArray } from "../smc/pd-array.js";
 import { analyzeDailyBias } from "../smc/daily-bias.js";
 import { analyzeSMT } from "../smc/smt.js";
 import { buildReport } from "../smc/report.js";
+import { marketStateSummary } from "../smc/market-state.js";
 import { fetchBinanceDailyCandles } from "../fetchers/binance.js";
 import { fetchYahooDailyCandles } from "../fetchers/yahoo.js";
 import type { Market, Timeframe } from "../smc/types.js";
@@ -152,7 +153,7 @@ toolRegistry.set("get_draw_targets", async (args) => {
   const candles = candleStore.getCandles(symbol, timeframe);
   if (candles.length < 10) return JSON.stringify({ error: "Insufficient candles" });
   const mkt = detectMarket(symbol);
-  const r = buildReport(candles, symbol, mkt, timeframe);
+  const r = buildReport(candles, symbol, mkt, timeframe, { closureEvidence: "proven" });
   return JSON.stringify({
     symbol, timeframe, currentPrice: r.currentPrice,
     targets: r.draw.slice(0, 5).map(d => ({
@@ -171,7 +172,7 @@ toolRegistry.set("build_full_report", async (args) => {
   const mkt = detectMarket(symbol);
   let daily;
   try { daily = mkt === "crypto" ? await fetchBinanceDailyCandles(symbol) : await fetchYahooDailyCandles(symbol); } catch { /* fallback */ }
-  const r = buildReport(candles, symbol, mkt, timeframe, { dailyCandles: daily });
+  const r = buildReport(candles, symbol, mkt, timeframe, { dailyCandles: daily, closureEvidence: "proven" });
   return JSON.stringify({
     symbol: r.symbol, market: r.market, timeframe: r.timeframe, currentPrice: r.currentPrice,
     narrative: r.narrative, sessionState: r.sessionState,
@@ -183,6 +184,10 @@ toolRegistry.set("build_full_report", async (args) => {
     topDraws: r.draw.slice(0, 3).map(d => ({ type: d.type, price: d.price, direction: d.direction, score: Math.round(d.score * 100) / 100 })),
     dailyBias: r.dailyBias.bias,
     smtDetected: r.smt.detected,
+    // Post-interaction state. Present but previously unpublished here: the REST
+    // route returned the whole report while this tool mapped a subset, so MCP
+    // consumers never saw a field the report had been carrying.
+    marketState: marketStateSummary(r.marketState),
   });
 });
 
@@ -209,7 +214,7 @@ toolRegistry.set("scan_all_timeframes", async (args) => {
     try {
       const candles = candleStore.getCandles(symbol, tf);
       if (candles.length < 10) { results[tf] = { bias: "unknown", confidence: 0, price: 0 }; continue; }
-      const r = buildReport(candles, symbol, mkt, tf);
+      const r = buildReport(candles, symbol, mkt, tf, { closureEvidence: "proven" });
       results[tf] = { bias: r.structure.bias, confidence: Math.round(r.structure.confidence * 100) / 100, price: r.currentPrice };
     } catch { results[tf] = { bias: "error", confidence: 0, price: 0 }; }
   }

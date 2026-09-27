@@ -141,13 +141,17 @@ console.log("繁中／簡中確實不同");
 // ── ICT 縮寫在所有語言都保留英文 ───────────────────────────────────────────
 
 console.log("─".repeat(60));
-console.log("ICT 縮寫三語言一致");
+console.log("引擎代號不出現在給人看的訊息裡（FVG／OB 例外）");
 for (const lang of SUPPORTED_LANGUAGES) {
   const s = stringsFor(lang as Language);
-  ok(s.sideBsl.includes("BSL"), `[${lang}] BSL 縮寫保留`);
-  ok(s.sideSsl.includes("SSL"), `[${lang}] SSL 縮寫保留`);
-  ok(s.stateSwept.includes("SWEPT"), `[${lang}] SWEPT 縮寫保留`);
-  ok(s.stateBroken.includes("BROKEN"), `[${lang}] BROKEN 縮寫保留`);
+  // The policy used to be the opposite: keep the English acronym so it lined up
+  // with TradingView. The requirement changed — a reader should not have to know
+  // the engine's vocabulary. FVG and OB are the stated exceptions and are not
+  // asserted here.
+  ok(!s.sideBsl.includes("BSL"), `[${lang}] 方位標籤不含 BSL 代號`);
+  ok(!s.sideSsl.includes("SSL"), `[${lang}] 方位標籤不含 SSL 代號`);
+  ok(!s.stateSwept.includes("SWEPT"), `[${lang}] 掃過用語不含 SWEPT 代號`);
+  ok(!s.stateBroken.includes("BROKEN"), `[${lang}] 突破用語不含 BROKEN 代號`);
 }
 
 // ── 多價位聚合訊息 ──────────────────────────────────────────────────────────

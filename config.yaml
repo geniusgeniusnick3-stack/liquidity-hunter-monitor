@@ -174,6 +174,38 @@ liquidity:
   # reason to suppress a newly formed level.
   region_lookback_days: 7
 
+market_state:
+  # Post-interaction market state layer (see lib/smc/market-state.ts).
+  #
+  # Answers the question single-candle SWEPT/BROKEN cannot: after a buy-side
+  # level is taken, did the market ACCEPT the breakout or FAIL it — and has the
+  # evidence for the other direction actually appeared?
+  #
+  # It reports; it never trades. There is no order path anywhere in this project.
+  #
+  # Cost: this layer runs the structure, FVG and order-block analyses on top of
+  # the liquidity scan.
+  #
+  # `enabled: false` switches the layer off for EVERY caller that loads this
+  # file — the scan path, and also the direct buildReport() callers (MCP tools,
+  # REST routes, the realtime bridge, the backtest runner), which used to keep
+  # computing it regardless. What it does NOT do is remove the output field:
+  # `SmcReport.marketState` is still present and comes back empty, because
+  # deleting a field from a published response shape would break consumers more
+  # than leaving it blank.
+  enabled: true
+
+  # The funnel width, in completed candles.
+  #
+  # Only a level taken within this many bars is investigated in depth. The window
+  # exists because a state needs time to form: judged one candle after a take,
+  # every level can only ever be "swept so far", so acceptance could never be
+  # observed at all. 24 bars is ~1 day on 1H and ~4 days on 4H.
+  #
+  # This trades API cost for completeness. Widening it investigates more symbols
+  # per scan; narrowing it silently stops reporting accepted breakouts.
+  screening_lookback_bars: 24
+
 alert_thresholds:
   # Price within this % of a liquidity level starts an APPROACHING event (§15).
   approaching_distance_pct: 0.5

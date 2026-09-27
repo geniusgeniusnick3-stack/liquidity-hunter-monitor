@@ -1,6 +1,7 @@
 import axios from "axios";
 import type { Candle } from "../smc/types.js";
 import { SMC_CONFIG } from "../smc/config.js";
+import { admitCandles } from "../smc/candles.js";
 
 const TF_MAP: Record<string, { interval: string; range: string; aggregate?: number }> = {
   "1m":  { interval: "1m",  range: "5d" },
@@ -66,10 +67,27 @@ export async function fetchYahooCandles(symbol: string, timeframe: string): Prom
   const raw = await fetchYahooRaw(symbol, cfg.interval, cfg.range);
 
   const candles = cfg.aggregate ? aggregateCandles(raw, cfg.aggregate) : raw;
-  return candles.slice(-SMC_CONFIG.maxCandles);
+  const sliced = candles.slice(-SMC_CONFIG.maxCandles);
+
+  // Yahoo hands back the in-progress bar as the last element and sends only an
+  // OPEN timestamp, so it cannot PROVE which of its rows have finished. That is
+  // the "unprovable" case in candles.ts: the gate drops the last row instead of
+  // guessing from the timeframe length. Guessing used to hold Friday's closed
+  // weekly bar back until Monday.
+  return admitCandles(sliced, {
+    closure: "unprovable",
+    nowSeconds: Math.floor(Date.now() / 1000),
+    minCandles: 1,
+  }).candles;
 }
 
 export async function fetchYahooDailyCandles(symbol: string): Promise<Candle[]> {
   const raw = await fetchYahooRaw(symbol, "1d", "6mo");
-  return raw.slice(-SMC_CONFIG.maxDailyCandles);
+  // Same "unprovable" closure as the intraday path above: Yahoo does not send a
+  // close time, so the last daily row is dropped rather than computed away.
+  return admitCandles(raw.slice(-SMC_CONFIG.maxDailyCandles), {
+    closure: "unprovable",
+    nowSeconds: Math.floor(Date.now() / 1000),
+    minCandles: 1,
+  }).candles;
 }

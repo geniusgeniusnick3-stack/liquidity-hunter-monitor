@@ -9,6 +9,7 @@
  */
 import axios, { type AxiosInstance } from "axios";
 import type { Candle } from "../smc/types.js";
+import { admitCandles } from "../smc/candles.js";
 import { logger } from "../logger.js";
 
 // ── Endpoints ───────────────────────────────────────────────────────────────
@@ -105,6 +106,7 @@ export async function fetchKlines(
   symbol: string,
   timeframe: string,
   limit = 500,
+  keepForming = false,
 ): Promise<Candle[]> {
   const interval = TF_TO_FAPI[timeframe];
   if (!interval) throw new Error(`Unsupported timeframe: ${timeframe}`);
@@ -125,8 +127,11 @@ export async function fetchKlines(
 
     const openTimeMs = Number(row[0]);
     const closeTimeMs = Number(row[6]);
-    // Drop the forming candle.
-    if (Number.isFinite(closeTimeMs) && closeTimeMs > nowMs) continue;
+    // Drop the forming candle — unless the caller explicitly asked for it. The
+    // live /scan path wants the candle that is forming right now: a reader looking
+    // at their chart sees it, and a long wick on it is a rejection that has already
+    // happened. Backtests and anything judging a completed bar keep the default.
+    if (!keepForming && Number.isFinite(closeTimeMs) && closeTimeMs > nowMs) continue;
 
     const candle: Candle = {
       time: Math.floor(openTimeMs / 1000),
@@ -148,7 +153,27 @@ export async function fetchKlines(
     candles.push(candle);
   }
 
-  return candles;
+  // The single admission gate — see lib/smc/candles.ts.
+  //
+  // Binance supplies a close time per row, so this source can PROVE its bars have
+  // finished: it declares "proven" and keeps every bar. What the gate adds here is
+  // the shared SHAPE contract — finite, strictly positive, OHLC-consistent,
+  // strictly increasing. Running it at the SOURCE is what makes this a boundary
+  // rather than a patch: every caller that fetches klines inherits it, instead of
+  // each doing its own checks or none at all.
+  const admission = admitCandles(candles, {
+    closure: "proven",
+    nowSeconds: Math.floor(nowMs / 1000),
+    minCandles: 0,
+  });
+  if (admission.rejected.length > 0) {
+    logger.warn(
+      { symbol, timeframe, rejected: admission.rejected.slice(0, 5) },
+      "Admission gate dropped candles",
+    );
+  }
+
+  return admission.candles;
 }
 
 /**

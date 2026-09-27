@@ -39,7 +39,8 @@ export function registerScanAllTool(server: FastMCP): void {
               failed++;
               continue;
             }
-            const report = buildReport(candles, sym, market, tf);
+            // candleStore.getCandles() returns only closed candles.
+            const report = buildReport(candles, sym, market, tf, { closureEvidence: "proven" });
             results[tf] = {
               bias: report.structure.bias,
               confidence: Math.round(report.structure.confidence * 100) / 100,
